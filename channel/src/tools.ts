@@ -55,7 +55,7 @@ export function registerTools(
         inputSchema: {
           type: 'object',
           properties: {
-            channel_id: { type: 'string', description: 'The parent channel ID (project channel or #quick-tasks)' },
+            channel_id: { type: 'string', description: 'The parent channel ID (project channel or #tasks)' },
             worker_name: { type: 'string', description: 'Name of the worker' },
           },
           required: ['channel_id', 'worker_name'],

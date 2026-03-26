@@ -21,7 +21,7 @@ Worker thread messages are handled DIRECTLY by the channel server. They do NOT c
 
 ## Spawning Workers
 When asked to spawn a worker:
-1. Determine which project it belongs to (or #quick-tasks)
+1. Determine which project it belongs to (or #tasks)
 2. Run: orch spawn <name> <dir> <prompt> --project <project>
 3. Call create_worker_thread(channel_id, worker_name)
 4. Call update_status(worker_name, "running", summary)

@@ -25,7 +25,7 @@ export interface PendingPermission {
 export interface ChannelState {
   mainChannelId: string
   notificationsChannelId: string
-  quickTasksChannelId: string
+  tasksChannelId: string
   projects: Record<string, ProjectInfo>
   workers: Record<string, WorkerInfo> // keyed by worker name
   pendingPermissions: Record<string, PendingPermission> // keyed by requestId
@@ -39,7 +39,7 @@ function defaultState(): ChannelState {
   return {
     mainChannelId: '',
     notificationsChannelId: '',
-    quickTasksChannelId: '',
+    tasksChannelId: '',
     projects: {},
     workers: {},
     pendingPermissions: {},
@@ -58,7 +58,7 @@ export function loadState(): ChannelState {
         if (config.discord) {
           state.mainChannelId = config.discord.main_channel_id || ''
           state.notificationsChannelId = config.discord.notifications_channel_id || ''
-          state.quickTasksChannelId = config.discord.quick_tasks_channel_id || ''
+          state.tasksChannelId = config.discord.tasks_channel_id || ''
         }
       } catch {
         // ignore parse errors

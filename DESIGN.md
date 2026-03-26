@@ -74,7 +74,7 @@ Server: "Claude Orchestrator"
 │   ├── Thread: refactor-auth    (worker)
 │   └── Thread: test-runner      (worker)
 │
-└── #quick-tasks ◄──────────── DEFAULT (no project context)
+└── #tasks ◄──────────── DEFAULT (no project context)
     One-off workers that don't belong to a project.
     ├── Thread: download-dataset
     └── Thread: fix-typos
@@ -97,7 +97,7 @@ Server: "Claude Orchestrator"
 │  #api-refactor ─────── Project channel (pinned context)     │
 │    ├── Thread: refactor-auth    (worker)                    │
 │    └── Thread: test-runner      (worker)                    │
-│  #quick-tasks ──────── Default (no project, one-off work)   │
+│  #tasks ──────── Default (no project, one-off work)   │
 │    └── Thread: download-dataset                             │
 └──────────────────────────────┬──────────────────────────────┘
                                │
@@ -189,7 +189,7 @@ Discord message arrives
        │     2. tmux send-keys -t orch-gpu-train-004 "Check inbox" Enter
        │     3. Reply in thread: "📨 Directive sent"
        │
-       ├── #quick-tasks → Worker thread
+       ├── #tasks → Worker thread
        │   → Same as project worker thread (direct routing)
        │
        ├── Permission verdict ("yes abc12" / "no abc12")
@@ -527,7 +527,7 @@ orch project list
     #     "guild_id": "...",
     #     "main_channel_id": "...",
     #     "notifications_channel_id": "...",
-    #     "quick_tasks_channel_id": "..."
+    #     "tasks_channel_id": "..."
     #   },
     #   "imessage": {
     #     "enabled": true,
@@ -578,9 +578,9 @@ reply(channel_or_thread_id: string, text: string)
 // Create a new project channel with pinned context
 create_project_channel(name: string, context: string): { channel_id: string }
 
-// Create a worker thread within a project channel (or #quick-tasks)
+// Create a worker thread within a project channel (or #tasks)
 create_worker_thread(
-  channel_id: string,    // project channel or #quick-tasks
+  channel_id: string,    // project channel or #tasks
   worker_name: string
 ): { thread_id: string }
 
@@ -618,7 +618,7 @@ channel top-level.
 
 ## Spawning Workers
 When asked to spawn a worker:
-1. Determine which project it belongs to (or #quick-tasks)
+1. Determine which project it belongs to (or #tasks)
 2. Run: orch spawn <name> <dir> <prompt> --project <project>
 3. Call create_worker_thread(channel_id, worker_name)
 4. Call update_status(worker_name, "running", summary)
@@ -641,7 +641,7 @@ interface ChannelState {
   // Fixed channel IDs
   mainChannelId: string
   notificationsChannelId: string
-  quickTasksChannelId: string
+  tasksChannelId: string
 
   // Projects: channel_id → project info
   projects: Map<string, {
@@ -750,7 +750,7 @@ fi
        │
        ▼
   3. CREATE DISCORD THREAD
-     In project channel (or #quick-tasks)
+     In project channel (or #tasks)
      Pin status message
        │
        ▼
@@ -814,7 +814,7 @@ Good for Apple Watch notifications when you're AFK.
 brew install tmux
 brew install node          # or bun
 # Discord: create app, bot, server, invite bot
-# Create channels: #main, #notifications, #quick-tasks
+# Create channels: #main, #notifications, #tasks
 # Project channels created dynamically via orch project create
 
 claude 2.1.83              # already available
@@ -942,7 +942,7 @@ Bot:
 5. Test: spawn worker, send directive, check status, kill
 
 ### Phase 2: Discord Channel (basic)
-6. Create Discord bot + server with #main, #notifications, #quick-tasks
+6. Create Discord bot + server with #main, #notifications, #tasks
 7. Build channel MCP server: Discord connection + MCP stdio + HTTP listener
 8. Implement routing: #main → main session, worker thread → direct
 9. Implement tools: reply, create_worker_thread, post_notification, update_status

@@ -80,14 +80,14 @@ export async function routeMessage(
     return
   }
 
-  // #quick-tasks (top-level, not a thread — treat like #main)
-  if (channelId === state.quickTasksChannelId && !isThread) {
+  // #tasks (top-level, not a thread — treat like #main)
+  if (channelId === state.tasksChannelId && !isThread) {
     await mcp.notification({
       method: 'notifications/claude/channel',
       params: {
         content,
         meta: {
-          channel: 'quick_tasks',
+          channel: 'tasks',
           sender: message.author.username,
           sender_id: message.author.id,
           message_id: message.id,
