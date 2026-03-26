@@ -59,6 +59,23 @@ chmod +x "$ORCH_HOME/hooks/notify-main.sh"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$ORCH_HOME/bin/orch" "$HOME/.local/bin/orch"
 
+# Install channel dependencies
+if [ -f "$REPO_DIR/channel/package.json" ]; then
+  echo ""
+  echo "Installing channel server dependencies..."
+  mkdir -p "$ORCH_HOME/channel"
+  cp -r "$REPO_DIR/channel/src" "$ORCH_HOME/channel/src"
+  cp "$REPO_DIR/channel/package.json" "$ORCH_HOME/channel/package.json"
+  cp "$REPO_DIR/channel/package-lock.json" "$ORCH_HOME/channel/package-lock.json" 2>/dev/null || true
+  cp "$REPO_DIR/channel/tsconfig.json" "$ORCH_HOME/channel/tsconfig.json"
+  if [ ! -f "$ORCH_HOME/channel/.env" ]; then
+    cp "$REPO_DIR/channel/.env.example" "$ORCH_HOME/channel/.env.example"
+    echo "  Created .env.example (copy to .env and add your bot token)"
+  fi
+  (cd "$ORCH_HOME/channel" && npm install --silent 2>/dev/null)
+  echo "  Channel server installed"
+fi
+
 # Check PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -q "$HOME/.local/bin"; then
   echo ""
@@ -77,3 +94,9 @@ echo "  orch list     — see all workers"
 echo ""
 echo "Config: $ORCH_HOME/config.json"
 echo "Workers: $ORCH_HOME/workers/"
+echo ""
+echo "For Discord integration:"
+echo "  1. Create a Discord bot at discord.com/developers"
+echo "  2. Copy $ORCH_HOME/channel/.env.example to $ORCH_HOME/channel/.env"
+echo "  3. Add your bot token and guild ID"
+echo "  4. Update discord section in $ORCH_HOME/config.json with channel IDs"
