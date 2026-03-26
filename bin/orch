@@ -1,0 +1,649 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# =============================================================================
+# Claude Code Orchestrator — CLI
+# Manages long-running Claude Code worker sessions via tmux.
+# =============================================================================
+
+ORCH_HOME="${ORCH_HOME:-$HOME/.claude-orchestrator}"
+CONFIG="$ORCH_HOME/config.json"
+WORKERS_DIR="$ORCH_HOME/workers"
+TEMPLATES_DIR="$ORCH_HOME/templates"
+HOOKS_DIR="$ORCH_HOME/hooks"
+TMUX_PREFIX="orch-"
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+require_tmux() {
+  command -v tmux &>/dev/null || die "tmux is required. Install with: brew install tmux"
+}
+
+require_claude() {
+  command -v claude &>/dev/null || die "claude CLI is required. See: https://claude.ai/download"
+}
+
+require_worker() {
+  local name="$1"
+  [ -d "$WORKERS_DIR/$name" ] || die "Worker '$name' not found."
+}
+
+tmux_session_exists() {
+  tmux has-session -t "$1" 2>/dev/null
+}
+
+read_config() {
+  local key="$1"
+  local default="${2:-}"
+  if command -v jq &>/dev/null && [ -f "$CONFIG" ]; then
+    local val
+    val=$(jq -r ".$key // empty" "$CONFIG" 2>/dev/null)
+    if [ -n "$val" ]; then
+      echo "$val"
+      return
+    fi
+  fi
+  echo "$default"
+}
+
+worker_count() {
+  local count=0
+  if [ -d "$WORKERS_DIR" ]; then
+    for d in "$WORKERS_DIR"/*/; do
+      [ -d "$d" ] && count=$((count + 1))
+    done
+  fi
+  echo "$count"
+}
+
+read_worker_field() {
+  local name="$1" field="$2"
+  if command -v jq &>/dev/null && [ -f "$WORKERS_DIR/$name/meta.json" ]; then
+    jq -r ".$field // empty" "$WORKERS_DIR/$name/meta.json" 2>/dev/null
+  fi
+}
+
+human_duration() {
+  local seconds="$1"
+  if [ "$seconds" -lt 60 ]; then
+    echo "${seconds}s"
+  elif [ "$seconds" -lt 3600 ]; then
+    echo "$((seconds / 60))m"
+  elif [ "$seconds" -lt 86400 ]; then
+    echo "$((seconds / 3600))h $((seconds % 3600 / 60))m"
+  else
+    echo "$((seconds / 86400))d $((seconds % 86400 / 3600))h"
+  fi
+}
+
+# Template rendering: substitute {{VAR}} placeholders and handle {{#if VAR}}...{{/if}} blocks.
+# Usage: render_template <template_file> KEY1=val1 KEY2=val2 ...
+# Compatible with bash 3.2 (no associative arrays).
+render_template() {
+  local template_file="$1"
+  shift
+
+  local content
+  content=$(<"$template_file")
+
+  # First pass: handle {{#if VAR}}...{{/if}} conditional blocks.
+  # For each KEY=val pair, if val is empty, remove the block; if non-empty, keep content.
+  for pair in "$@"; do
+    local key="${pair%%=*}"
+    local val="${pair#*=}"
+    if [ -z "$val" ]; then
+      # Remove the entire block between {{#if KEY}} and the next {{/if}}
+      content=$(printf '%s\n' "$content" | awk -v opentag="{{#if $key}}" -v closetag="{{/if}}" '
+        BEGIN { skip = 0 }
+        {
+          if (index($0, opentag)) { skip = 1; next }
+          if (skip && index($0, closetag)) { skip = 0; next }
+          if (!skip) print
+        }
+      ')
+    else
+      # Keep content, remove the marker lines containing this specific {{#if KEY}}
+      content=$(printf '%s\n' "$content" | grep -v "{{#if $key}}")
+    fi
+  done
+
+  # Remove any remaining {{/if}} markers
+  content=$(printf '%s\n' "$content" | sed 's/{{\/if}}//g')
+
+  # Second pass: simple placeholder substitution
+  for pair in "$@"; do
+    local key="${pair%%=*}"
+    local val="${pair#*=}"
+    # Escape sed special chars in val
+    local escaped_val
+    escaped_val=$(printf '%s' "$val" | sed 's/[&/\]/\\&/g')
+    content=$(printf '%s\n' "$content" | sed "s|{{${key}}}|${escaped_val}|g")
+  done
+
+  printf '%s\n' "$content"
+}
+
+# =============================================================================
+# Subcommands
+# =============================================================================
+
+cmd_help() {
+  cat <<'EOF'
+Usage: orch <command> [args]
+
+Worker commands:
+  spawn <name> <dir> <prompt> [options]   Spawn a new worker
+    --ssh <user@host>                     SSH target for the worker
+    --project <name>                      Attach to a project
+    --template <name>                     System prompt template (default: "default")
+    --model <model>                       Model override
+    --no-permissions-skip                 Require permission approvals
+
+  send <name> <message>                   Send a directive to a worker
+  status [name]                           Show worker status (all or one)
+  list                                    List all workers
+  logs <name> [--tail N]                  Show worker terminal output
+  kill <name>                             Gracefully stop a worker
+  cleanup                                 Remove finished workers older than 24h
+  help                                    Show this help message
+EOF
+}
+
+cmd_spawn() {
+  require_tmux
+  require_claude
+
+  # Parse arguments
+  local name="" dir="" prompt=""
+  local ssh_host="" project="" template="default" model="" no_perms_skip=false
+  local positional=()
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ssh)        ssh_host="$2"; shift 2 ;;
+      --project)    project="$2"; shift 2 ;;
+      --template)   template="$2"; shift 2 ;;
+      --model)      model="$2"; shift 2 ;;
+      --no-permissions-skip) no_perms_skip=true; shift ;;
+      -*)           die "Unknown option: $1" ;;
+      *)            positional+=("$1"); shift ;;
+    esac
+  done
+
+  [ ${#positional[@]} -ge 3 ] || die "Usage: orch spawn <name> <dir> <prompt> [options]"
+
+  name="${positional[0]}"
+  dir="${positional[1]}"
+  prompt="${positional[2]}"
+
+  # Validate name
+  [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]] || die "Invalid worker name '$name'. Use only letters, numbers, hyphens, underscores."
+
+  # Check not already exists
+  [ ! -d "$WORKERS_DIR/$name" ] || die "Worker '$name' already exists. Kill it first or choose a different name."
+
+  # Resolve and validate directory
+  dir=$(cd "$dir" 2>/dev/null && pwd) || die "Directory '$dir' does not exist."
+
+  # Check max workers
+  local max_workers
+  max_workers=$(read_config "max_workers" "12")
+  local current
+  current=$(worker_count)
+  [ "$current" -lt "$max_workers" ] || die "Maximum workers ($max_workers) reached. Kill a worker first."
+
+  # Defaults
+  [ -n "$model" ] || model=$(read_config "default_model" "sonnet")
+  local perms_skip
+  perms_skip=$(read_config "permissions_skip" "true")
+  if [ "$no_perms_skip" = true ]; then
+    perms_skip="false"
+  fi
+  local channel_port
+  channel_port=$(read_config "channel_port" "9111")
+
+  # Check template exists
+  local template_file="$TEMPLATES_DIR/${template}.md"
+  [ -f "$template_file" ] || die "Template '$template' not found at $template_file"
+
+  # Create worker directory
+  local worker_dir="$WORKERS_DIR/$name"
+  mkdir -p "$worker_dir/inbox" "$worker_dir/outbox"
+
+  # Read project context if applicable
+  local project_context=""
+  if [ -n "$project" ] && [ -f "$ORCH_HOME/projects/${project}.json" ]; then
+    if command -v jq &>/dev/null; then
+      project_context=$(jq -r '.context // empty' "$ORCH_HOME/projects/${project}.json" 2>/dev/null)
+    fi
+  fi
+
+  # Write meta.json
+  local created
+  created=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  cat > "$worker_dir/meta.json" <<METAEOF
+{
+  "name": "$name",
+  "project": $([ -n "$project" ] && echo "\"$project\"" || echo "null"),
+  "created": "$created",
+  "dir": "$dir",
+  "prompt": $(printf '%s' "$prompt" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))'),
+  "ssh_host": $([ -n "$ssh_host" ] && echo "\"$ssh_host\"" || echo "null"),
+  "tmux_session": "${TMUX_PREFIX}${name}",
+  "model": "$model",
+  "template": "$template"
+}
+METAEOF
+
+  # Write status and task
+  echo "starting" > "$worker_dir/status"
+  echo "$prompt" > "$worker_dir/task"
+  date +%s > "$worker_dir/heartbeat"
+
+  # Snapshot project context
+  if [ -n "$project_context" ]; then
+    echo "$project_context" > "$worker_dir/project-context.md"
+  fi
+
+  # Render system prompt
+  render_template "$template_file" \
+    "WORKER_NAME=$name" \
+    "WORKER_DIR=$dir" \
+    "SSH_HOST=$ssh_host" \
+    "PROJECT_NAME=$project" \
+    "PROJECT_CONTEXT=$project_context" \
+    "ORCH_HOME=$ORCH_HOME" \
+    "CHANNEL_PORT=$channel_port" \
+    > "$worker_dir/system-prompt.md"
+
+  # Generate worker settings.json with hook
+  cat > "$worker_dir/settings.json" <<SETEOF
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOOKS_DIR/notify-main.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+SETEOF
+
+  # Create tmux session
+  local tmux_name="${TMUX_PREFIX}${name}"
+  tmux new-session -d -s "$tmux_name" -c "$dir"
+
+  # Set environment variables
+  tmux send-keys -t "$tmux_name" "export ORCH_WORKER_NAME='$name' ORCH_HOME='$ORCH_HOME'" Enter
+
+  # Build claude command
+  local claude_cmd="claude"
+  claude_cmd+=" --name '${name}'"
+  claude_cmd+=" --system-prompt-file '${worker_dir}/system-prompt.md'"
+  claude_cmd+=" --settings '${worker_dir}/settings.json'"
+  claude_cmd+=" --model '${model}'"
+  claude_cmd+=" --add-dir '${ORCH_HOME}/workers/${name}'"
+  if [ "$perms_skip" = "true" ]; then
+    claude_cmd+=" --dangerously-skip-permissions"
+  fi
+
+  # Launch claude
+  tmux send-keys -t "$tmux_name" "$claude_cmd" Enter
+
+  # If using --dangerously-skip-permissions, accept the confirmation prompt.
+  # The prompt shows two options: 1=No (default), 2=Yes.
+  # Wait for the prompt to appear, then navigate down and confirm.
+  if [ "$perms_skip" = "true" ]; then
+    sleep 4
+    tmux send-keys -t "$tmux_name" Down
+    sleep 0.5
+    tmux send-keys -t "$tmux_name" Enter
+  fi
+
+  # Wait for claude to fully start
+  sleep 4
+
+  # Use load-buffer + paste-buffer to handle special characters in prompts
+  printf '%s' "$prompt" | tmux load-buffer -b "orch-prompt-${name}" -
+  tmux paste-buffer -b "orch-prompt-${name}" -t "$tmux_name"
+  tmux send-keys -t "$tmux_name" Enter
+  tmux delete-buffer -b "orch-prompt-${name}" 2>/dev/null || true
+
+  # Update status
+  echo "running" > "$worker_dir/status"
+
+  echo "Worker '$name' spawned in tmux session '$tmux_name'"
+  echo "  Directory: $dir"
+  echo "  Model: $model"
+  [ -n "$ssh_host" ] && echo "  SSH: $ssh_host"
+  [ -n "$project" ] && echo "  Project: $project"
+  echo "  Use 'orch status $name' to check progress"
+  echo "  Use 'orch logs $name' to see terminal output"
+}
+
+cmd_send() {
+  [ $# -ge 2 ] || die "Usage: orch send <name> <message>"
+  local name="$1"
+  shift
+  local message="$*"
+
+  require_worker "$name"
+
+  local inbox_dir="$WORKERS_DIR/$name/inbox"
+  mkdir -p "$inbox_dir"
+
+  # Find next inbox number
+  local max_num=0
+  shopt -s nullglob
+  for f in "$inbox_dir"/*.md; do
+    local base
+    base=$(basename "$f" .md)
+    local num=$((10#$base))
+    [ "$num" -gt "$max_num" ] && max_num=$num
+  done
+  shopt -u nullglob
+  local next_num
+  next_num=$(printf "%03d" $((max_num + 1)))
+
+  # Write directive
+  local timestamp
+  timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  cat > "$inbox_dir/${next_num}.md" <<EOF
+# Directive ${next_num}
+Received: ${timestamp}
+
+${message}
+EOF
+
+  echo "Directive sent to '$name' (inbox/${next_num}.md)"
+
+  # Nudge the worker if tmux session is alive
+  local tmux_name="${TMUX_PREFIX}${name}"
+  if tmux_session_exists "$tmux_name"; then
+    tmux send-keys -t "$tmux_name" \
+      "Check your inbox at $ORCH_HOME/workers/$name/inbox/ for new directives." Enter
+  else
+    echo "warning: tmux session '$tmux_name' not found. Directive written to inbox but worker may be dead." >&2
+  fi
+}
+
+cmd_status() {
+  if [ $# -eq 0 ]; then
+    cmd_list
+    return
+  fi
+
+  local name="$1"
+  require_worker "$name"
+
+  local worker_dir="$WORKERS_DIR/$name"
+  local tmux_name="${TMUX_PREFIX}${name}"
+
+  # Read metadata
+  echo "=== Worker: $name ==="
+  echo ""
+
+  if [ -f "$worker_dir/meta.json" ] && command -v jq &>/dev/null; then
+    echo "Created:   $(jq -r '.created // "unknown"' "$worker_dir/meta.json")"
+    echo "Directory: $(jq -r '.dir // "unknown"' "$worker_dir/meta.json")"
+    echo "Model:     $(jq -r '.model // "unknown"' "$worker_dir/meta.json")"
+    local ssh
+    ssh=$(jq -r '.ssh_host // empty' "$worker_dir/meta.json")
+    [ -n "$ssh" ] && echo "SSH:       $ssh"
+    local proj
+    proj=$(jq -r '.project // empty' "$worker_dir/meta.json")
+    [ -n "$proj" ] && echo "Project:   $proj"
+  fi
+
+  # Status
+  local status="unknown"
+  [ -f "$worker_dir/status" ] && status=$(<"$worker_dir/status")
+  echo "Status:    $status"
+
+  # Uptime
+  if [ -f "$worker_dir/meta.json" ] && command -v jq &>/dev/null; then
+    local created_str
+    created_str=$(jq -r '.created // empty' "$worker_dir/meta.json")
+    if [ -n "$created_str" ]; then
+      local created_epoch
+      created_epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$created_str" +%s 2>/dev/null || echo "")
+      if [ -n "$created_epoch" ]; then
+        local now
+        now=$(date +%s)
+        echo "Uptime:    $(human_duration $((now - created_epoch)))"
+      fi
+    fi
+  fi
+
+  # Heartbeat
+  if [ -f "$worker_dir/heartbeat" ]; then
+    local hb
+    hb=$(<"$worker_dir/heartbeat")
+    local now
+    now=$(date +%s)
+    local age=$((now - hb))
+    echo "Heartbeat: $(human_duration $age) ago"
+    if [ "$age" -gt 300 ] && [ "$status" = "running" ]; then
+      echo "           ⚠ Heartbeat stale (>5min). Worker may be stuck."
+    fi
+  fi
+
+  # Task
+  echo ""
+  if [ -f "$worker_dir/task" ]; then
+    echo "Task:"
+    sed 's/^/  /' "$worker_dir/task"
+  fi
+
+  # Inbox/Outbox counts
+  local inbox_count=0 outbox_count=0
+  [ -d "$worker_dir/inbox" ] && inbox_count=$(find "$worker_dir/inbox" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')
+  [ -d "$worker_dir/outbox" ] && outbox_count=$(find "$worker_dir/outbox" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')
+  echo ""
+  echo "Inbox:     $inbox_count pending directive(s)"
+  echo "Outbox:    $outbox_count update(s)"
+
+  # tmux status
+  echo ""
+  if tmux_session_exists "$tmux_name"; then
+    echo "tmux:      alive ($tmux_name)"
+    echo ""
+    echo "--- Last 20 lines of terminal ---"
+    tmux capture-pane -t "$tmux_name" -p -S -20 2>/dev/null || echo "(could not capture)"
+  else
+    echo "tmux:      dead ($tmux_name not found)"
+  fi
+}
+
+cmd_list() {
+  if [ ! -d "$WORKERS_DIR" ] || [ -z "$(ls -A "$WORKERS_DIR" 2>/dev/null)" ]; then
+    echo "No workers found."
+    return
+  fi
+
+  # Print header
+  printf "%-20s %-10s %-10s %-12s %-15s %s\n" "NAME" "STATUS" "MODEL" "UPTIME" "HEARTBEAT" "TMUX"
+  printf "%-20s %-10s %-10s %-12s %-15s %s\n" "----" "------" "-----" "------" "---------" "----"
+
+  local now
+  now=$(date +%s)
+
+  for worker_dir in "$WORKERS_DIR"/*/; do
+    [ -d "$worker_dir" ] || continue
+    local name
+    name=$(basename "$worker_dir")
+
+    # Status
+    local status="?"
+    [ -f "$worker_dir/status" ] && status=$(<"$worker_dir/status")
+
+    # Model
+    local model="?"
+    if command -v jq &>/dev/null && [ -f "$worker_dir/meta.json" ]; then
+      model=$(jq -r '.model // "?"' "$worker_dir/meta.json")
+    fi
+
+    # Uptime
+    local uptime="?"
+    if command -v jq &>/dev/null && [ -f "$worker_dir/meta.json" ]; then
+      local created_str
+      created_str=$(jq -r '.created // empty' "$worker_dir/meta.json")
+      if [ -n "$created_str" ]; then
+        local created_epoch
+        created_epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$created_str" +%s 2>/dev/null || echo "")
+        if [ -n "$created_epoch" ]; then
+          uptime=$(human_duration $((now - created_epoch)))
+        fi
+      fi
+    fi
+
+    # Heartbeat
+    local heartbeat="?"
+    if [ -f "$worker_dir/heartbeat" ]; then
+      local hb
+      hb=$(<"$worker_dir/heartbeat")
+      heartbeat="$(human_duration $((now - hb))) ago"
+    fi
+
+    # tmux
+    local tmux_name="${TMUX_PREFIX}${name}"
+    local tmux_status="dead"
+    tmux_session_exists "$tmux_name" && tmux_status="alive"
+
+    printf "%-20s %-10s %-10s %-12s %-15s %s\n" "$name" "$status" "$model" "$uptime" "$heartbeat" "$tmux_status"
+  done
+}
+
+cmd_logs() {
+  [ $# -ge 1 ] || die "Usage: orch logs <name> [--tail N]"
+  local name="$1"
+  shift
+
+  require_worker "$name"
+  require_tmux
+
+  local tail_n=50
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --tail) tail_n="$2"; shift 2 ;;
+      *)      die "Unknown option: $1" ;;
+    esac
+  done
+
+  local tmux_name="${TMUX_PREFIX}${name}"
+  tmux_session_exists "$tmux_name" || die "tmux session '$tmux_name' not found. Worker may have exited."
+
+  tmux capture-pane -t "$tmux_name" -p -S "-${tail_n}"
+}
+
+cmd_kill() {
+  [ $# -ge 1 ] || die "Usage: orch kill <name>"
+  local name="$1"
+
+  require_worker "$name"
+
+  local worker_dir="$WORKERS_DIR/$name"
+  local tmux_name="${TMUX_PREFIX}${name}"
+
+  if tmux_session_exists "$tmux_name"; then
+    # Try graceful exit first
+    tmux send-keys -t "$tmux_name" "/exit" Enter
+
+    # Wait up to 5 seconds
+    local waited=0
+    while [ $waited -lt 5 ]; do
+      sleep 1
+      waited=$((waited + 1))
+      tmux_session_exists "$tmux_name" || break
+    done
+
+    # Force kill if still alive
+    if tmux_session_exists "$tmux_name"; then
+      tmux kill-session -t "$tmux_name" 2>/dev/null || true
+      echo "Worker '$name' force-killed (did not exit gracefully)."
+    else
+      echo "Worker '$name' exited gracefully."
+    fi
+  else
+    echo "Worker '$name' tmux session already gone."
+  fi
+
+  echo "killed" > "$worker_dir/status"
+}
+
+cmd_cleanup() {
+  if [ ! -d "$WORKERS_DIR" ] || [ -z "$(ls -A "$WORKERS_DIR" 2>/dev/null)" ]; then
+    echo "Nothing to clean up."
+    return
+  fi
+
+  local now
+  now=$(date +%s)
+  local cleaned=0
+
+  for worker_dir in "$WORKERS_DIR"/*/; do
+    [ -d "$worker_dir" ] || continue
+    local name
+    name=$(basename "$worker_dir")
+
+    # Only clean up finished workers
+    local status=""
+    [ -f "$worker_dir/status" ] && status=$(<"$worker_dir/status")
+    case "$status" in
+      done|killed|error) ;;
+      *) continue ;;
+    esac
+
+    # Check age
+    if command -v jq &>/dev/null && [ -f "$worker_dir/meta.json" ]; then
+      local created_str
+      created_str=$(jq -r '.created // empty' "$worker_dir/meta.json")
+      if [ -n "$created_str" ]; then
+        local created_epoch
+        created_epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$created_str" +%s 2>/dev/null || echo "")
+        if [ -n "$created_epoch" ]; then
+          local age=$((now - created_epoch))
+          if [ "$age" -gt 86400 ]; then
+            rm -rf "$worker_dir"
+            echo "Cleaned up: $name (${status}, $(human_duration $age) old)"
+            cleaned=$((cleaned + 1))
+          fi
+        fi
+      fi
+    fi
+  done
+
+  if [ "$cleaned" -eq 0 ]; then
+    echo "Nothing to clean up. (Finished workers must be >24h old.)"
+  else
+    echo "Cleaned up $cleaned worker(s)."
+  fi
+}
+
+# =============================================================================
+# Main dispatch
+# =============================================================================
+
+case "${1:-help}" in
+  spawn)   shift; cmd_spawn "$@" ;;
+  send)    shift; cmd_send "$@" ;;
+  status)  shift; cmd_status "$@" ;;
+  list)    shift; cmd_list "$@" ;;
+  logs)    shift; cmd_logs "$@" ;;
+  kill)    shift; cmd_kill "$@" ;;
+  cleanup) shift; cmd_cleanup "$@" ;;
+  help|-h|--help) cmd_help ;;
+  *)       die "Unknown command: $1. Run 'orch help' for usage." ;;
+esac
