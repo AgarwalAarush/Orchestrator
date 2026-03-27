@@ -126,9 +126,31 @@ claude --channels orchestrator-discord \
 └── config.json           # Global config
 ```
 
-## Status
+## Next Steps
 
-Early development — see [DESIGN.md](DESIGN.md) for the full architecture and implementation plan.
+### Intelligent Model Routing
+
+Not every task needs the same model. The orchestrator should analyze incoming tasks and automatically select the right Anthropic model:
+
+| Model | Best For | Examples |
+|-------|----------|---------|
+| **Haiku** | Monitoring, status checks, simple file ops | `slurm-watch`, log tailing, health checks |
+| **Sonnet** | Standard code tasks, moderate reasoning | Feature implementation, refactoring, test writing |
+| **Opus** | Complex architecture, multi-file reasoning, ambiguous specs | System design, debugging subtle issues, cross-repo changes |
+
+The routing system will classify tasks by complexity signals (scope, ambiguity, reasoning depth) and select the cheapest model that can handle the job. Workers can also escalate mid-task — a Haiku monitor that detects an anomaly can flag it for an Opus worker to investigate.
+
+### Remaining Implementation
+
+- **Permission relay** — Surface Claude Code permission requests in Discord worker threads for approval
+- **State recovery** — Persist channel server state to disk, reload on restart
+- **iMessage integration** — Lightweight pings to Apple devices on worker completion/error
+- **Heartbeat monitoring** — Detect dead workers and alert in Discord
+- **Worker-to-worker communication** — Shared project state or direct inbox routing between workers
+- **Rich embeds** — Better-formatted status messages and notifications in Discord
+- **Discord rate limit handling** — Debounce with 8+ concurrent workers
+
+See [DESIGN.md](DESIGN.md) for the full architecture and phased implementation plan.
 
 ## License
 
