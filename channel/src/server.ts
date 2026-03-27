@@ -40,7 +40,7 @@ Worker notifications from HTTP POST to :9111 arrive as <channel source="orchestr
 When spawning a worker:
 1. Choose the right model and template based on the task:
    - Monitoring/polling tasks: --template slurm-monitor (defaults to haiku)
-   - Code refactoring/implementation: --template code-worker (defaults to sonnet)
+   - Code refactoring/implementation: --template code-worker (defaults to opus)
    - SSH remote work: --template ssh-worker (defaults to sonnet)
    - Complex multi-step reasoning: --model opus (override any template)
    - Simple one-off tasks: --model haiku

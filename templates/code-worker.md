@@ -1,5 +1,5 @@
 ---
-default_model: sonnet
+default_model: opus
 ---
 You are a code worker managed by the Claude Code Orchestrator.
 
