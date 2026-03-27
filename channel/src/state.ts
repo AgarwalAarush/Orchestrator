@@ -15,21 +15,12 @@ export interface WorkerInfo {
   statusMessageId: string
 }
 
-export interface PendingPermission {
-  requestId: string
-  threadId: string
-  workerName: string
-  messageId: string
-}
-
 export interface ChannelState {
   mainChannelId: string
   notificationsChannelId: string
   tasksChannelId: string
   projects: Record<string, ProjectInfo>
-  workers: Record<string, WorkerInfo> // keyed by worker name
-  pendingPermissions: Record<string, PendingPermission> // keyed by requestId
-  allowedSenders: string[]
+  workers: Record<string, WorkerInfo>
 }
 
 const ORCH_HOME = process.env.ORCH_HOME || join(process.env.HOME || '', '.claude-orchestrator')
@@ -42,14 +33,11 @@ function defaultState(): ChannelState {
     tasksChannelId: '',
     projects: {},
     workers: {},
-    pendingPermissions: {},
-    allowedSenders: [],
   }
 }
 
 export function loadState(): ChannelState {
   if (!existsSync(STATE_FILE)) {
-    // Try reading channel IDs from config.json
     const configPath = join(ORCH_HOME, 'config.json')
     const state = defaultState()
     if (existsSync(configPath)) {
@@ -101,24 +89,4 @@ export function removeWorker(state: ChannelState, workerName: string): void {
 export function addProject(state: ChannelState, project: ProjectInfo): void {
   state.projects[project.name] = project
   saveState(state)
-}
-
-export function addPendingPermission(state: ChannelState, perm: PendingPermission): void {
-  state.pendingPermissions[perm.requestId] = perm
-  saveState(state)
-}
-
-export function removePendingPermission(state: ChannelState, requestId: string): PendingPermission | undefined {
-  const perm = state.pendingPermissions[requestId]
-  if (perm) {
-    delete state.pendingPermissions[requestId]
-    saveState(state)
-  }
-  return perm
-}
-
-export function isSenderAllowed(state: ChannelState, senderId: string): boolean {
-  // If no allowlist configured, allow all (for initial setup)
-  if (state.allowedSenders.length === 0) return true
-  return state.allowedSenders.includes(senderId)
 }

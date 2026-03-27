@@ -1,114 +1,98 @@
 #!/usr/bin/env node
+/**
+ * Orchestrator Companion MCP Server
+ *
+ * Runs alongside the official Discord plugin (which handles all Discord ↔ Claude messaging).
+ * This server provides:
+ * 1. MCP tools for orchestrator actions (threads, status, projects, notifications)
+ * 2. HTTP listener on :9111 for worker POST notifications
+ * 3. Channel push capability to notify Claude of worker events
+ *
+ * Does NOT connect to Discord gateway — uses REST API only.
+ */
 import 'dotenv/config'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import { Client, GatewayIntentBits, Partials } from 'discord.js'
+import { initDiscordRest } from './discord-rest.js'
 import { loadState } from './state.js'
 import { registerTools } from './tools.js'
-import { routeMessage } from './routing.js'
-import { registerPermissionHandler } from './permissions.js'
 import { startHttpListener } from './http.js'
+import { startMonitor } from './monitor.js'
 
-const CHANNEL_INSTRUCTIONS = `You are connected to a Discord server via the orchestrator-discord channel.
+const INSTRUCTIONS = `You have access to orchestrator tools from the orchestrator-companion server.
+These let you manage worker Discord threads, project channels, and status messages.
 
-## Routing
-Messages arrive as <channel> tags:
-- channel="main": You're being spoken to directly. Respond via the reply tool, using the message's channel ID.
-- channel="<project-name>" project="true": Project discussion. You have the project's pinned context. Respond with project awareness via the reply tool.
-- source="worker" worker="<name>" event="<type>": Worker notification. Post to Discord (notification + worker thread + update status). If event="done", consider updating project context with results.
+For conversational replies to Discord users, use the official Discord plugin's reply tool.
+For orchestrator actions, use these tools:
 
-Worker thread messages are handled DIRECTLY by the channel server. They do NOT come to you. You only hear about workers when they POST updates via HTTP, or when someone messages you in #main or a project channel top-level.
+- create_worker_thread(channel_id, worker_name): Create a Discord thread for a worker with pinned status
+- update_status(worker_name, status, summary): Edit the pinned status message in a worker's thread
+- post_notification(text, severity): Post to #notifications channel
+- create_project_channel(name, context): Create a new Discord channel for a project with pinned context
+- update_context(project_name, new_context): Edit pinned context in a project channel
+- route_to_worker(worker_name, message): Forward a message directly to a worker's inbox
 
-## Spawning Workers
-When asked to spawn a worker:
-1. Determine which project it belongs to (or #tasks)
-2. Run: orch spawn <name> <dir> <prompt> --project <project>
-3. Call create_worker_thread(channel_id, worker_name)
-4. Call update_status(worker_name, "running", summary)
-5. Reply to confirm
+Worker notifications from HTTP POST to :9111 arrive as <channel source="orchestrator-companion" ...> tags.
+- source="worker" worker="<name>" event="done|update|error|blocked": Worker posted an update.
+  When event="done", consider updating the project context with results.
+  When event="error" or event="blocked", inform the user.
 
-## Managing Projects
-When asked to create a project:
-1. Call create_project_channel(name, context)
-2. Confirm with channel link
+When spawning a worker:
+1. Run: orch spawn <name> <dir> <prompt> [--project <project>]
+2. Call create_worker_thread(channel_id, worker_name)
+3. Call update_status(worker_name, "RUNNING", summary)
+4. Reply to confirm using the Discord plugin's reply tool
 
-When a worker reports results that change project state:
-1. Call update_context with the new information
-2. Inform the user`
+When someone messages in a worker thread (you'll see the chat_id matches a known worker thread):
+1. Do NOT respond conversationally
+2. Call route_to_worker(worker_name, message_content)
+3. Reply "📨 Directive sent" using the Discord plugin's reply tool`
 
 async function main() {
-  // Validate environment
   const botToken = process.env.DISCORD_BOT_TOKEN
   if (!botToken) {
-    console.error('[server] DISCORD_BOT_TOKEN not set. Create a .env file from .env.example')
+    console.error('[companion] DISCORD_BOT_TOKEN not set')
     process.exit(1)
   }
 
+  // Initialize Discord REST (no gateway connection)
+  initDiscordRest(botToken)
+  console.error('[companion] Discord REST initialized')
+
   // Load persisted state
   const state = loadState()
-  console.error('[server] State loaded')
+  console.error('[companion] State loaded')
 
-  // Create MCP server
+  // Create MCP server with channel capability (for pushing worker notifications)
   const mcp = new Server(
-    { name: 'orchestrator-discord', version: '0.1.0' },
+    { name: 'orchestrator-companion', version: '0.2.0' },
     {
       capabilities: {
-        experimental: {
-          'claude/channel': {},
-          'claude/channel/permission': {},
-        },
+        experimental: { 'claude/channel': {} },
         tools: {},
       },
-      instructions: CHANNEL_INSTRUCTIONS,
+      instructions: INSTRUCTIONS,
     }
   )
 
-  // Create Discord client
-  const discord = new Client({
-    intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent,
-      GatewayIntentBits.GuildMessageReactions,
-    ],
-    partials: [Partials.Message, Partials.Channel, Partials.Reaction],
-  })
-
   // Register MCP tools
-  registerTools(mcp, discord, state)
-
-  // Register permission handler
-  registerPermissionHandler(mcp, discord, state)
-
-  // Discord: handle incoming messages
-  discord.on('messageCreate', async (message) => {
-    try {
-      await routeMessage(message, mcp, discord, state)
-    } catch (err) {
-      console.error('[server] Error routing message:', err)
-    }
-  })
-
-  // Discord: log when ready
-  discord.once('ready', (client) => {
-    console.error(`[server] Discord bot logged in as ${client.user.tag}`)
-  })
-
-  // Connect Discord
-  await discord.login(botToken)
+  registerTools(mcp, state)
 
   // Start HTTP listener for worker notifications
   const port = parseInt(process.env.ORCH_PORT || '9111', 10)
-  startHttpListener(port, mcp, discord, state)
+  startHttpListener(port, mcp, state)
+
+  // Start heartbeat monitor
+  startMonitor(state)
 
   // Connect MCP server via stdio
   const transport = new StdioServerTransport()
   await mcp.connect(transport)
-  console.error('[server] MCP server connected via stdio')
-  console.error('[server] Orchestrator channel ready')
+  console.error('[companion] MCP server connected')
+  console.error('[companion] Orchestrator companion ready')
 }
 
 main().catch((err) => {
-  console.error('[server] Fatal error:', err)
+  console.error('[companion] Fatal error:', err)
   process.exit(1)
 })

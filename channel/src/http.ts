@@ -1,14 +1,16 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http'
+import { readFileSync } from 'fs'
+import { join } from 'path'
+import { execSync } from 'child_process'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { Client, TextChannel, ThreadChannel } from 'discord.js'
+import * as discord from './discord-rest.js'
 import type { ChannelState } from './state.js'
-import { saveState } from './state.js'
 
 const SEVERITY_EMOJI: Record<string, string> = {
-  done: '✅',
-  update: '📋',
-  error: '❌',
-  blocked: '🚫',
+  done: '\u2705',
+  update: '\uD83D\uDCCB',
+  error: '\u274C',
+  blocked: '\uD83D\uDEAB',
 }
 
 interface WorkerNotification {
@@ -26,18 +28,22 @@ function parseBody(req: IncomingMessage): Promise<string> {
   })
 }
 
+function loadConfig(): Record<string, any> {
+  const orchHome = process.env.ORCH_HOME || join(process.env.HOME || '', '.claude-orchestrator')
+  try {
+    return JSON.parse(readFileSync(join(orchHome, 'config.json'), 'utf-8'))
+  } catch {
+    return {}
+  }
+}
+
 /**
  * Start the HTTP listener for worker notifications.
  * Workers POST to /notify with { worker, event, summary }.
+ * Posts directly to Discord via REST API and pushes MCP notification to Claude.
  */
-export function startHttpListener(
-  port: number,
-  mcp: Server,
-  discord: Client,
-  state: ChannelState
-): void {
+export function startHttpListener(port: number, mcp: Server, state: ChannelState): void {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    // Only handle POST /notify
     if (req.method !== 'POST' || req.url !== '/notify') {
       res.writeHead(404)
       res.end('not found')
@@ -54,30 +60,23 @@ export function startHttpListener(
         return
       }
 
-      const emoji = SEVERITY_EMOJI[data.event] || '📋'
+      const emoji = SEVERITY_EMOJI[data.event] || '\uD83D\uDCCB'
       const workerInfo = state.workers[data.worker]
 
       // 1. Post in worker thread (if registered in state)
       if (workerInfo?.threadId) {
         try {
-          const thread = await discord.channels.fetch(workerInfo.threadId)
-          if (thread?.isTextBased()) {
-            await (thread as ThreadChannel).send(`${emoji} ${data.summary}`)
-          }
+          await discord.sendMessage(workerInfo.threadId, `${emoji} ${data.summary}`)
         } catch (err) {
           console.error(`[http] Failed to post in worker thread:`, err)
         }
       }
 
       // 2. Post in #notifications
-      if (state.notificationsChannelId) {
+      const notifChannelId = process.env.NOTIFICATIONS_CHANNEL_ID || state.notificationsChannelId
+      if (notifChannelId) {
         try {
-          const notifChannel = await discord.channels.fetch(state.notificationsChannelId)
-          if (notifChannel?.isTextBased()) {
-            await (notifChannel as TextChannel).send(
-              `${emoji} **[${data.worker}]** ${data.summary}`
-            )
-          }
+          await discord.sendMessage(notifChannelId, `${emoji} **[${data.worker}]** ${data.summary}`)
         } catch (err) {
           console.error(`[http] Failed to post notification:`, err)
         }
@@ -86,20 +85,17 @@ export function startHttpListener(
       // 3. Update pinned status message in worker thread
       if (workerInfo?.statusMessageId && workerInfo?.threadId) {
         try {
-          const thread = await discord.channels.fetch(workerInfo.threadId)
-          if (thread?.isTextBased()) {
-            const statusMsg = await (thread as ThreadChannel).messages.fetch(workerInfo.statusMessageId)
-            const statusText = data.event === 'done' ? 'DONE' :
-                               data.event === 'error' ? 'ERROR' :
-                               data.event === 'blocked' ? 'BLOCKED' : 'RUNNING'
-            await statusMsg.edit(`**Status:** ${statusText} | ${data.summary}`)
-          }
+          const statusText = data.event === 'done' ? 'DONE' :
+                             data.event === 'error' ? 'ERROR' :
+                             data.event === 'blocked' ? 'BLOCKED' : 'RUNNING'
+          await discord.editMessage(workerInfo.threadId, workerInfo.statusMessageId,
+            `**Status:** ${statusText} | ${data.summary}`)
         } catch (err) {
           console.error(`[http] Failed to update status message:`, err)
         }
       }
 
-      // 4. Notify main session via MCP so Claude can update project context
+      // 4. Notify main session via MCP channel push
       try {
         await mcp.notification({
           method: 'notifications/claude/channel',
@@ -114,6 +110,22 @@ export function startHttpListener(
         })
       } catch (err) {
         console.error(`[http] Failed to send MCP notification:`, err)
+      }
+
+      // 5. Optional: iMessage ping for done/error events
+      try {
+        const config = loadConfig()
+        if (config.imessage?.enabled && config.imessage?.recipient &&
+            (config.imessage?.notify_events || ['done', 'error']).includes(data.event)) {
+          const msg = `${emoji} [${data.worker}] ${data.summary}`
+          const escaped = msg.replace(/"/g, '\\"')
+          execSync(
+            `osascript -e 'tell application "Messages" to send "${escaped}" to buddy "${config.imessage.recipient}"'`,
+            { stdio: 'ignore', timeout: 5000 }
+          )
+        }
+      } catch {
+        // iMessage is best-effort
       }
 
       res.writeHead(200)
