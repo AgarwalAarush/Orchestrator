@@ -153,6 +153,13 @@ Worker commands:
   kill <name>                             Gracefully stop a worker
   cleanup                                 Remove finished workers older than 24h
   help                                    Show this help message
+
+Project commands:
+  project create <name> <context>         Create a project
+  project update <name> <context>         Update project context
+  project link <name> <chan_id> <msg_id>  Link project to Discord channel
+  project archive <name>                  Archive a project
+  project list                            List all projects
 EOF
 }
 
@@ -633,6 +640,155 @@ cmd_cleanup() {
 }
 
 # =============================================================================
+# Project subcommands
+# =============================================================================
+
+PROJECTS_DIR="$ORCH_HOME/projects"
+
+cmd_project() {
+  local subcmd="${1:-}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    create)  cmd_project_create "$@" ;;
+    update)  cmd_project_update "$@" ;;
+    link)    cmd_project_link "$@" ;;
+    archive) cmd_project_archive "$@" ;;
+    list)    cmd_project_list "$@" ;;
+    *)       die "Usage: orch project <create|update|link|archive|list> [args]" ;;
+  esac
+}
+
+cmd_project_create() {
+  [ $# -ge 2 ] || die "Usage: orch project create <name> <context>"
+  local name="$1"
+  shift
+  local context="$*"
+
+  [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]] || die "Invalid project name '$name'. Use only letters, numbers, hyphens, underscores."
+
+  mkdir -p "$PROJECTS_DIR"
+  local project_file="$PROJECTS_DIR/${name}.json"
+  [ ! -f "$project_file" ] || die "Project '$name' already exists."
+
+  local created
+  created=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  cat > "$project_file" <<PROJEOF
+{
+  "name": "$name",
+  "context": $(printf '%s' "$context" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))'),
+  "created": "$created",
+  "status": "active",
+  "channel_id": null,
+  "context_message_id": null
+}
+PROJEOF
+
+  echo "Project '$name' created."
+  echo "  Context: $context"
+  echo ""
+  echo "To create a Discord channel, ask Claude to call create_project_channel."
+  echo "Then link with: orch project link $name <channel_id> <context_msg_id>"
+}
+
+cmd_project_update() {
+  [ $# -ge 2 ] || die "Usage: orch project update <name> <context>"
+  local name="$1"
+  shift
+  local context="$*"
+
+  local project_file="$PROJECTS_DIR/${name}.json"
+  [ -f "$project_file" ] || die "Project '$name' not found."
+
+  if command -v jq &>/dev/null; then
+    local tmp
+    tmp=$(jq --arg ctx "$context" '.context = $ctx' "$project_file")
+    echo "$tmp" > "$project_file"
+  else
+    die "jq is required for project update"
+  fi
+
+  echo "Project '$name' context updated."
+}
+
+cmd_project_link() {
+  [ $# -ge 3 ] || die "Usage: orch project link <name> <channel_id> <context_message_id>"
+  local name="$1"
+  local channel_id="$2"
+  local context_msg_id="$3"
+
+  local project_file="$PROJECTS_DIR/${name}.json"
+  [ -f "$project_file" ] || die "Project '$name' not found."
+
+  if command -v jq &>/dev/null; then
+    local tmp
+    tmp=$(jq --arg cid "$channel_id" --arg mid "$context_msg_id" \
+      '.channel_id = $cid | .context_message_id = $mid' "$project_file")
+    echo "$tmp" > "$project_file"
+  else
+    die "jq is required for project link"
+  fi
+
+  echo "Project '$name' linked to Discord channel $channel_id."
+}
+
+cmd_project_archive() {
+  [ $# -ge 1 ] || die "Usage: orch project archive <name>"
+  local name="$1"
+
+  local project_file="$PROJECTS_DIR/${name}.json"
+  [ -f "$project_file" ] || die "Project '$name' not found."
+
+  if command -v jq &>/dev/null; then
+    local tmp
+    tmp=$(jq '.status = "archived"' "$project_file")
+    echo "$tmp" > "$project_file"
+  else
+    die "jq is required for project archive"
+  fi
+
+  echo "Project '$name' archived."
+}
+
+cmd_project_list() {
+  mkdir -p "$PROJECTS_DIR"
+
+  if [ -z "$(ls -A "$PROJECTS_DIR" 2>/dev/null)" ]; then
+    echo "No projects found."
+    return
+  fi
+
+  printf "%-20s %-10s %-22s %s\n" "NAME" "STATUS" "CHANNEL" "WORKERS"
+  printf "%-20s %-10s %-22s %s\n" "----" "------" "-------" "-------"
+
+  for project_file in "$PROJECTS_DIR"/*.json; do
+    [ -f "$project_file" ] || continue
+
+    if command -v jq &>/dev/null; then
+      local name status channel_id
+      name=$(jq -r '.name // "?"' "$project_file")
+      status=$(jq -r '.status // "?"' "$project_file")
+      channel_id=$(jq -r '.channel_id // "not linked"' "$project_file")
+      if [ "$channel_id" = "null" ]; then channel_id="not linked"; fi
+
+      # Count workers attached to this project
+      local worker_count=0
+      if [ -d "$WORKERS_DIR" ]; then
+        for wd in "$WORKERS_DIR"/*/meta.json; do
+          [ -f "$wd" ] || continue
+          local wp
+          wp=$(jq -r '.project // empty' "$wd" 2>/dev/null)
+          [ "$wp" = "$name" ] && worker_count=$((worker_count + 1))
+        done
+      fi
+
+      printf "%-20s %-10s %-22s %s\n" "$name" "$status" "$channel_id" "$worker_count"
+    fi
+  done
+}
+
+# =============================================================================
 # Main dispatch
 # =============================================================================
 
@@ -644,6 +800,7 @@ case "${1:-help}" in
   logs)    shift; cmd_logs "$@" ;;
   kill)    shift; cmd_kill "$@" ;;
   cleanup) shift; cmd_cleanup "$@" ;;
+  project) shift; cmd_project "$@" ;;
   help|-h|--help) cmd_help ;;
   *)       die "Unknown command: $1. Run 'orch help' for usage." ;;
 esac
