@@ -93,6 +93,11 @@ render_template() {
   local content
   content=$(<"$template_file")
 
+  # Strip YAML frontmatter if present (--- delimited block at start of file)
+  if printf '%s\n' "$content" | head -1 | grep -q "^---$"; then
+    content=$(printf '%s\n' "$content" | awk 'BEGIN{skip=0; first=1} {if(first && $0=="---"){skip=1; first=0; next} if(skip && $0=="---"){skip=0; next} if(!skip) print}')
+  fi
+
   # First pass: handle {{#if VAR}}...{{/if}} conditional blocks.
   # For each KEY=val pair, if val is empty, remove the block; if non-empty, keep content.
   for pair in "$@"; do
@@ -206,8 +211,24 @@ cmd_spawn() {
   current=$(worker_count)
   [ "$current" -lt "$max_workers" ] || die "Maximum workers ($max_workers) reached. Kill a worker first."
 
-  # Defaults
-  [ -n "$model" ] || model=$(read_config "default_model" "sonnet")
+  # Check template exists
+  local template_file="$TEMPLATES_DIR/${template}.md"
+  [ -f "$template_file" ] || die "Template '$template' not found at $template_file"
+
+  # Read template frontmatter for default_model (if not overridden by --model)
+  if [ -z "$model" ]; then
+    # Check for YAML frontmatter: --- on first line, default_model field
+    local template_model=""
+    if head -1 "$template_file" | grep -q "^---$"; then
+      template_model=$(sed -n '2,/^---$/p' "$template_file" | grep "^default_model:" | head -1 | sed 's/^default_model: *//')
+    fi
+    if [ -n "$template_model" ]; then
+      model="$template_model"
+    else
+      model=$(read_config "default_model" "sonnet")
+    fi
+  fi
+
   local perms_skip
   perms_skip=$(read_config "permissions_skip" "true")
   if [ "$no_perms_skip" = true ]; then
@@ -215,10 +236,6 @@ cmd_spawn() {
   fi
   local channel_port
   channel_port=$(read_config "channel_port" "9111")
-
-  # Check template exists
-  local template_file="$TEMPLATES_DIR/${template}.md"
-  [ -f "$template_file" ] || die "Template '$template' not found at $template_file"
 
   # Create worker directory
   local worker_dir="$WORKERS_DIR/$name"

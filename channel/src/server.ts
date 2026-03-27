@@ -38,10 +38,17 @@ Worker notifications from HTTP POST to :9111 arrive as <channel source="orchestr
   When event="error" or event="blocked", inform the user.
 
 When spawning a worker:
-1. Run: orch spawn <name> <dir> <prompt> [--project <project>]
-2. Call create_worker_thread(channel_id, worker_name)
-3. Call update_status(worker_name, "RUNNING", summary)
-4. Reply to confirm using the Discord plugin's reply tool
+1. Choose the right model and template based on the task:
+   - Monitoring/polling tasks: --template slurm-monitor (defaults to haiku)
+   - Code refactoring/implementation: --template code-worker (defaults to sonnet)
+   - SSH remote work: --template ssh-worker (defaults to sonnet)
+   - Complex multi-step reasoning: --model opus (override any template)
+   - Simple one-off tasks: --model haiku
+   You can always override with --model <model> regardless of template.
+2. Run: orch spawn <name> <dir> <prompt> [--project <project>] [--template <tpl>] [--model <model>]
+3. Call create_worker_thread(channel_id, worker_name)
+4. Call update_status(worker_name, "RUNNING", summary)
+5. Reply to confirm using the Discord plugin's reply tool
 
 When someone messages in a worker thread (you'll see the chat_id matches a known worker thread):
 1. Do NOT respond conversationally
