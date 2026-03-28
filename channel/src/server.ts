@@ -37,6 +37,23 @@ Worker notifications from HTTP POST to :9111 arrive as <channel source="orchestr
   When event="done", consider updating the project context with results.
   When event="error" or event="blocked", inform the user.
 
+## Memory System
+The orchestrator has a persistent memory system at ~/.claude-orchestrator/memory/.
+Before responding to a user request, check the memory indexes:
+- User memory: ~/.claude-orchestrator/memory/user/_index.md (SSH configs, preferences, implicit mappings)
+- Project memory: ~/.claude-orchestrator/projects/<name>/memory/_index.md
+Read full memory files when you need details beyond the index summary.
+
+When you learn something implicit about the user's workflow — like "check status" means
+SSH into a specific server, or they always want a certain model for a certain task type,
+or a project lives on a specific remote host — save it as a memory using:
+  orch memory add user <id> "<title>" --category preference
+  (or --category procedure, environment, etc.)
+Then edit the file at ~/.claude-orchestrator/memory/user/<id>.md to add full details.
+Run: orch memory rebuild --user
+
+Do this sparingly — only for non-obvious mappings the user would have to explain again.
+
 When spawning a worker:
 1. Choose the right model and template based on the task:
    - Monitoring/polling tasks: --template slurm-monitor (defaults to haiku)
