@@ -76,13 +76,28 @@ export async function pinMessage(channelId: string, messageId: string): Promise<
   })
 }
 
-/** Create a text channel in a guild. Returns the channel object. */
-export async function createGuildChannel(guildId: string, name: string): Promise<{ id: string }> {
+/** Create a text channel in a guild, optionally under a category. Returns the channel object. */
+export async function createGuildChannel(guildId: string, name: string, parentId?: string): Promise<{ id: string }> {
+  const body: Record<string, any> = { name, type: 0 /* GUILD_TEXT */ }
+  if (parentId) body.parent_id = parentId
+  return discordFetch(`/guilds/${guildId}/channels`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+/** Create a category in a guild. Returns the category object. */
+export async function createGuildCategory(guildId: string, name: string): Promise<{ id: string }> {
   return discordFetch(`/guilds/${guildId}/channels`, {
     method: 'POST',
     body: JSON.stringify({
       name,
-      type: 0, // GUILD_TEXT
+      type: 4, // GUILD_CATEGORY
     }),
   })
+}
+
+/** List all channels in a guild. */
+export async function listGuildChannels(guildId: string): Promise<Array<{ id: string; name: string; type: number; parent_id?: string }>> {
+  return discordFetch(`/guilds/${guildId}/channels`, { method: 'GET' })
 }

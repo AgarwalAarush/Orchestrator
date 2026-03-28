@@ -181,7 +181,13 @@ async function handleCreateProjectChannel(state: ChannelState, name: string, con
   if (!guildId) {
     return { content: [{ type: 'text' as const, text: 'GUILD_ID not configured' }] }
   }
-  const channel = await discord.createGuildChannel(guildId, name)
+
+  // Find or create "Projects" category
+  const channels = await discord.listGuildChannels(guildId)
+  const existing = channels.find(ch => ch.type === 4 && ch.name.toLowerCase() === 'projects')
+  const categoryId = existing?.id ?? (await discord.createGuildCategory(guildId, 'Projects')).id
+
+  const channel = await discord.createGuildChannel(guildId, name, categoryId)
   const contextMsg = await discord.sendMessage(channel.id, context)
   await discord.pinMessage(channel.id, contextMsg.id)
 
