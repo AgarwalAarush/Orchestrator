@@ -44,6 +44,22 @@ function loadConfig(): Record<string, any> {
  */
 export function startHttpListener(port: number, mcp: Server, state: ChannelState): void {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    // POST /memory — worker signals a memory was created/updated
+    if (req.method === 'POST' && req.url === '/memory') {
+      try {
+        const body = await parseBody(req)
+        const data = JSON.parse(body) as { worker: string; action: string; layer: string; id: string; project?: string }
+        await handleMemorySignal(data, mcp, state)
+        res.writeHead(200)
+        res.end(JSON.stringify({ indexed: true }))
+      } catch (err) {
+        console.error('[http] Error handling memory signal:', err)
+        res.writeHead(500)
+        res.end('error')
+      }
+      return
+    }
+
     if (req.method !== 'POST' || req.url !== '/notify') {
       res.writeHead(404)
       res.end('not found')
@@ -140,4 +156,49 @@ export function startHttpListener(port: number, mcp: Server, state: ChannelState
   server.listen(port, '127.0.0.1', () => {
     console.error(`[http] Listening on http://127.0.0.1:${port}`)
   })
+}
+
+/**
+ * Handle a memory signal from a worker.
+ * Rebuilds the memory index by shelling out to `orch memory rebuild`.
+ */
+async function handleMemorySignal(
+  data: { worker: string; action: string; layer: string; id: string; project?: string },
+  mcp: Server,
+  state: ChannelState
+): Promise<void> {
+  const { worker, action, layer, id, project } = data
+  console.error(`[http] Memory signal: ${action} ${layer}/${id} from ${worker}`)
+
+  // Rebuild the relevant index via orch CLI
+  try {
+    if (layer === 'user') {
+      execSync('orch memory rebuild --user', { stdio: 'ignore', timeout: 5000 })
+    } else if (layer === 'project' && project) {
+      execSync(`orch memory rebuild --project "${project}"`, { stdio: 'ignore', timeout: 5000 })
+    } else if (layer === 'worker') {
+      // Worker memory doesn't need index rebuild for others, but we could notify
+    }
+  } catch (err) {
+    console.error('[http] Failed to rebuild memory index:', err)
+  }
+
+  // Notify main session that a memory was added
+  try {
+    await mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: `Memory "${id}" ${action === 'add' ? 'created' : 'updated'} by worker ${worker} in ${layer}${project ? `:${project}` : ''}`,
+        meta: {
+          source: 'memory',
+          worker,
+          action,
+          layer,
+          memory_id: id,
+        },
+      },
+    })
+  } catch (err) {
+    console.error('[http] Failed to notify about memory:', err)
+  }
 }

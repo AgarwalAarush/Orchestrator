@@ -165,6 +165,13 @@ Project commands:
   project link <name> <chan_id> <msg_id>  Link project to Discord channel
   project archive <name>                  Archive a project
   project list                            List all projects
+
+Memory commands:
+  memory list [--user] [--project <n>]    List memory entries
+  memory show <layer>:<id>                Show a memory file
+  memory rebuild [--all] [--project <n>]  Rebuild memory indexes
+  memory promote <worker> <id> --to <dst> Promote worker memory
+  memory add <layer> <id> <title> [opts]  Create a memory entry
 EOF
 }
 
@@ -276,6 +283,33 @@ METAEOF
     echo "$project_context" > "$worker_dir/project-context.md"
   fi
 
+  # Create worker memory directory
+  mkdir -p "$worker_dir/memory"
+
+  # Read memory indexes for injection
+  local user_memory_index="" project_memory_index="" patterns_memory_index="" memory_context=""
+
+  # Rebuild indexes to ensure freshness
+  [ -d "$MEMORY_DIR/user" ] && rebuild_memory_index "$MEMORY_DIR/user" "User Memory"
+  [ -d "$MEMORY_DIR/patterns" ] && rebuild_memory_index "$MEMORY_DIR/patterns" "Patterns"
+  if [ -n "$project" ] && [ -d "$ORCH_HOME/projects/$project/memory" ]; then
+    rebuild_memory_index "$ORCH_HOME/projects/$project/memory" "Project: $project"
+  fi
+
+  # Read indexes
+  if [ -f "$MEMORY_DIR/user/_index.md" ]; then
+    user_memory_index=$(<"$MEMORY_DIR/user/_index.md")
+    memory_context="1"
+  fi
+  if [ -f "$MEMORY_DIR/patterns/_index.md" ]; then
+    patterns_memory_index=$(<"$MEMORY_DIR/patterns/_index.md")
+    memory_context="1"
+  fi
+  if [ -n "$project" ] && [ -f "$ORCH_HOME/projects/$project/memory/_index.md" ]; then
+    project_memory_index=$(<"$ORCH_HOME/projects/$project/memory/_index.md")
+    memory_context="1"
+  fi
+
   # Render system prompt
   render_template "$template_file" \
     "WORKER_NAME=$name" \
@@ -285,6 +319,10 @@ METAEOF
     "PROJECT_CONTEXT=$project_context" \
     "ORCH_HOME=$ORCH_HOME" \
     "CHANNEL_PORT=$channel_port" \
+    "MEMORY_CONTEXT=$memory_context" \
+    "USER_MEMORY_INDEX=$user_memory_index" \
+    "PROJECT_MEMORY_INDEX=$project_memory_index" \
+    "PATTERNS_MEMORY_INDEX=$patterns_memory_index" \
     > "$worker_dir/system-prompt.md"
 
   # Generate worker settings.json with hook
@@ -806,6 +844,349 @@ cmd_project_list() {
 }
 
 # =============================================================================
+# Memory subcommands
+# =============================================================================
+
+MEMORY_DIR="$ORCH_HOME/memory"
+
+# Rebuild _index.md for a memory directory by scanning .md files and parsing frontmatter.
+rebuild_memory_index() {
+  local mem_dir="$1"
+  local label="${2:-Memory}"
+
+  [ -d "$mem_dir" ] || return
+
+  local index_file="$mem_dir/_index.md"
+  local entries_file
+  entries_file=$(mktemp)
+
+  # Collect entries: category|id|title
+  shopt -s nullglob
+  for f in "$mem_dir"/*.md; do
+    local base
+    base=$(basename "$f")
+    [ "$base" = "_index.md" ] && continue
+
+    local id="${base%.md}"
+    local title="" category="" expires=""
+
+    # Parse YAML frontmatter
+    if head -1 "$f" | grep -q "^---$"; then
+      title=$(sed -n '2,/^---$/{ /^title:/{ s/^title: *//; p; }; }' "$f" | head -1)
+      category=$(sed -n '2,/^---$/{ /^category:/{ s/^category: *//; p; }; }' "$f" | head -1)
+      expires=$(sed -n '2,/^---$/{ /^expires:/{ s/^expires: *//; p; }; }' "$f" | head -1)
+
+      # Skip expired
+      if [ -n "$expires" ]; then
+        local exp_epoch
+        exp_epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$expires" +%s 2>/dev/null || echo "")
+        if [ -n "$exp_epoch" ] && [ "$(date +%s)" -gt "$exp_epoch" ]; then
+          continue
+        fi
+      fi
+    fi
+
+    [ -z "$title" ] && title="$id"
+    [ -z "$category" ] && category="reference"
+
+    echo "${category}|${id}|${title}" >> "$entries_file"
+  done
+  shopt -u nullglob
+
+  # Build index grouped by category
+  {
+    echo "# ${label}"
+    echo ""
+
+    local cat_name cat_label
+    for cat_name in environment experiment-result decision preference procedure warning reference; do
+      case "$cat_name" in
+        environment)       cat_label="Environment" ;;
+        experiment-result) cat_label="Experiment Results" ;;
+        decision)          cat_label="Decisions" ;;
+        preference)        cat_label="Preferences" ;;
+        procedure)         cat_label="Procedures" ;;
+        warning)           cat_label="Warnings" ;;
+        reference)         cat_label="Reference" ;;
+      esac
+
+      local has_entries=false
+      while IFS='|' read -r ecat eid etitle; do
+        if [ "$ecat" = "$cat_name" ]; then
+          if [ "$has_entries" = false ]; then
+            echo "## ${cat_label}"
+            has_entries=true
+          fi
+          echo "- [${eid}](${eid}.md) — ${etitle}"
+        fi
+      done < "$entries_file"
+
+      [ "$has_entries" = true ] && echo ""
+    done
+  } > "$index_file"
+
+  rm -f "$entries_file"
+}
+
+cmd_memory() {
+  local subcmd="${1:-}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    list)    cmd_memory_list "$@" ;;
+    show)    cmd_memory_show "$@" ;;
+    rebuild) cmd_memory_rebuild "$@" ;;
+    promote) cmd_memory_promote "$@" ;;
+    add)     cmd_memory_add "$@" ;;
+    *)       die "Usage: orch memory <list|show|rebuild|promote|add> [args]" ;;
+  esac
+}
+
+cmd_memory_list() {
+  local show_user=false show_patterns=false show_project="" show_worker=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --user)     show_user=true; shift ;;
+      --patterns) show_patterns=true; shift ;;
+      --project)  show_project="$2"; shift 2 ;;
+      --worker)   show_worker="$2"; shift 2 ;;
+      *)          die "Unknown option: $1" ;;
+    esac
+  done
+
+  # Default: show all
+  if [ "$show_user" = false ] && [ "$show_patterns" = false ] && [ -z "$show_project" ] && [ -z "$show_worker" ]; then
+    show_user=true
+    show_patterns=true
+  fi
+
+  if [ "$show_user" = true ] && [ -f "$MEMORY_DIR/user/_index.md" ]; then
+    cat "$MEMORY_DIR/user/_index.md"
+    echo ""
+  fi
+
+  if [ "$show_patterns" = true ] && [ -f "$MEMORY_DIR/patterns/_index.md" ]; then
+    cat "$MEMORY_DIR/patterns/_index.md"
+    echo ""
+  fi
+
+  if [ -n "$show_project" ]; then
+    local idx="$ORCH_HOME/projects/$show_project/memory/_index.md"
+    if [ -f "$idx" ]; then
+      cat "$idx"
+    else
+      echo "No memories for project '$show_project'."
+    fi
+    echo ""
+  fi
+
+  if [ -n "$show_worker" ]; then
+    local idx="$WORKERS_DIR/$show_worker/memory/_index.md"
+    if [ -f "$idx" ]; then
+      cat "$idx"
+    else
+      echo "No memories for worker '$show_worker'."
+    fi
+    echo ""
+  fi
+
+  # If no flags, also list all projects that have memory
+  if [ "$show_user" = true ]; then
+    shopt -s nullglob
+    for pdir in "$ORCH_HOME"/projects/*/memory/_index.md; do
+      cat "$pdir"
+      echo ""
+    done
+    shopt -u nullglob
+  fi
+}
+
+cmd_memory_show() {
+  [ $# -ge 1 ] || die "Usage: orch memory show <layer>:<id>  (e.g., user:ssh-config or project:ml-training:optimizer)"
+  local spec="$1"
+
+  # Parse layer:id or layer:project:id
+  local layer id project_name
+  IFS=':' read -r layer project_name id <<< "$spec"
+
+  # If only two parts, it's layer:id (not layer:project:id)
+  if [ -z "$id" ]; then
+    id="$project_name"
+    project_name=""
+  fi
+
+  local mem_file=""
+  case "$layer" in
+    user)     mem_file="$MEMORY_DIR/user/${id}.md" ;;
+    patterns) mem_file="$MEMORY_DIR/patterns/${id}.md" ;;
+    project)
+      [ -n "$project_name" ] || die "Specify project: orch memory show project:<name>:<id>"
+      mem_file="$ORCH_HOME/projects/$project_name/memory/${id}.md"
+      ;;
+    worker)
+      [ -n "$project_name" ] || die "Specify worker: orch memory show worker:<name>:<id>"
+      mem_file="$WORKERS_DIR/$project_name/memory/${id}.md"
+      ;;
+    *)  die "Unknown layer '$layer'. Use: user, project, worker, patterns" ;;
+  esac
+
+  [ -f "$mem_file" ] || die "Memory not found: $mem_file"
+  cat "$mem_file"
+}
+
+cmd_memory_rebuild() {
+  local rebuild_user=false rebuild_patterns=false rebuild_project="" rebuild_all=false
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --user)     rebuild_user=true; shift ;;
+      --patterns) rebuild_patterns=true; shift ;;
+      --project)  rebuild_project="$2"; shift 2 ;;
+      --all)      rebuild_all=true; shift ;;
+      *)          die "Unknown option: $1" ;;
+    esac
+  done
+
+  if [ "$rebuild_all" = true ]; then
+    rebuild_user=true
+    rebuild_patterns=true
+  fi
+
+  if [ "$rebuild_user" = true ] || [ "$rebuild_all" = true ]; then
+    if [ -d "$MEMORY_DIR/user" ]; then
+      rebuild_memory_index "$MEMORY_DIR/user" "User Memory"
+      echo "Rebuilt: user memory index"
+    fi
+  fi
+
+  if [ "$rebuild_patterns" = true ] || [ "$rebuild_all" = true ]; then
+    if [ -d "$MEMORY_DIR/patterns" ]; then
+      rebuild_memory_index "$MEMORY_DIR/patterns" "Patterns"
+      echo "Rebuilt: patterns index"
+    fi
+  fi
+
+  if [ -n "$rebuild_project" ]; then
+    local pdir="$ORCH_HOME/projects/$rebuild_project/memory"
+    if [ -d "$pdir" ]; then
+      rebuild_memory_index "$pdir" "Project: $rebuild_project"
+      echo "Rebuilt: project '$rebuild_project' memory index"
+    else
+      echo "No memory directory for project '$rebuild_project'."
+    fi
+  fi
+
+  if [ "$rebuild_all" = true ]; then
+    for pdir in "$ORCH_HOME"/projects/*/memory; do
+      [ -d "$pdir" ] || continue
+      local pname
+      pname=$(basename "$(dirname "$pdir")")
+      rebuild_memory_index "$pdir" "Project: $pname"
+      echo "Rebuilt: project '$pname' memory index"
+    done
+  fi
+}
+
+cmd_memory_promote() {
+  [ $# -ge 3 ] || die "Usage: orch memory promote <worker-name> <memory-id> --to <project-name|user>"
+  local worker_name="$1"
+  local memory_id="$2"
+  local target=""
+
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --to) target="$2"; shift 2 ;;
+      *)    die "Unknown option: $1" ;;
+    esac
+  done
+
+  [ -n "$target" ] || die "Must specify --to <project-name|user>"
+
+  local src="$WORKERS_DIR/$worker_name/memory/${memory_id}.md"
+  [ -f "$src" ] || die "Worker memory not found: $src"
+
+  local dest_dir
+  if [ "$target" = "user" ]; then
+    dest_dir="$MEMORY_DIR/user"
+  else
+    dest_dir="$ORCH_HOME/projects/$target/memory"
+  fi
+
+  mkdir -p "$dest_dir"
+  cp "$src" "$dest_dir/${memory_id}.md"
+
+  # Update source field in promoted file
+  if command -v sed &>/dev/null; then
+    sed -i '' "s/^source: .*/source: promoted:$worker_name/" "$dest_dir/${memory_id}.md" 2>/dev/null || true
+  fi
+
+  rebuild_memory_index "$dest_dir" "$([ "$target" = "user" ] && echo "User Memory" || echo "Project: $target")"
+  echo "Promoted '$memory_id' from worker '$worker_name' to $target."
+}
+
+cmd_memory_add() {
+  local layer="" id="" title="" category="reference" tags=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --category) category="$2"; shift 2 ;;
+      --tags)     tags="$2"; shift 2 ;;
+      -*)         die "Unknown option: $1" ;;
+      *)
+        if [ -z "$layer" ]; then layer="$1"
+        elif [ -z "$id" ]; then id="$1"
+        else title="${title:+$title }$1"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  [ -n "$layer" ] && [ -n "$id" ] && [ -n "$title" ] || \
+    die "Usage: orch memory add <layer[:project]> <id> <title> --category <cat> [--tags t1,t2]"
+
+  local project_name="" mem_dir=""
+  case "$layer" in
+    user)     mem_dir="$MEMORY_DIR/user" ;;
+    patterns) mem_dir="$MEMORY_DIR/patterns" ;;
+    project:*)
+      project_name="${layer#project:}"
+      mem_dir="$ORCH_HOME/projects/$project_name/memory"
+      ;;
+    *)  die "Layer must be: user, patterns, or project:<name>" ;;
+  esac
+
+  mkdir -p "$mem_dir"
+
+  local created
+  created=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+  local tags_line=""
+  [ -n "$tags" ] && tags_line="tags: [$(echo "$tags" | sed 's/,/, /g')]"
+
+  cat > "$mem_dir/${id}.md" <<MEMEOF
+---
+id: $id
+title: $title
+category: $category
+${tags_line:+$tags_line}
+created: $created
+updated: $created
+source: user
+confidence: high
+---
+
+$title
+MEMEOF
+
+  rebuild_memory_index "$mem_dir" "$([ "$layer" = "user" ] && echo "User Memory" || echo "${layer}")"
+  echo "Memory '$id' created in $layer."
+  echo "  Edit the full content at: $mem_dir/${id}.md"
+}
+
+# =============================================================================
 # Main dispatch
 # =============================================================================
 
@@ -818,6 +1199,7 @@ case "${1:-help}" in
   kill)    shift; cmd_kill "$@" ;;
   cleanup) shift; cmd_cleanup "$@" ;;
   project) shift; cmd_project "$@" ;;
+  memory)  shift; cmd_memory "$@" ;;
   help|-h|--help) cmd_help ;;
   *)       die "Unknown command: $1. Run 'orch help' for usage." ;;
 esac
