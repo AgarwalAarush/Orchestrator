@@ -64,6 +64,7 @@ if [ -f "$REPO_DIR/channel/package.json" ]; then
   echo ""
   echo "Installing channel server dependencies..."
   mkdir -p "$ORCH_HOME/channel"
+  rm -rf "$ORCH_HOME/channel/src"
   cp -r "$REPO_DIR/channel/src" "$ORCH_HOME/channel/src"
   cp "$REPO_DIR/channel/package.json" "$ORCH_HOME/channel/package.json"
   cp "$REPO_DIR/channel/package-lock.json" "$ORCH_HOME/channel/package-lock.json" 2>/dev/null || true
