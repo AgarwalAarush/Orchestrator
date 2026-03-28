@@ -1,9 +1,41 @@
+import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { join } from 'path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import * as discord from './discord-rest.js'
 import type { ChannelState } from './state.js'
 import { addWorker, addProject, saveState } from './state.js'
 import { routeToWorker } from './direct.js'
+
+const DISCORD_ACCESS_FILE = join(process.env.HOME || '', '.claude', 'channels', 'discord', 'access.json')
+
+/** Add a channel ID to the Discord plugin's access.json so it can send messages there. */
+function addChannelToDiscordAccess(channelId: string): void {
+  try {
+    let access: Record<string, any> = {}
+    if (existsSync(DISCORD_ACCESS_FILE)) {
+      access = JSON.parse(readFileSync(DISCORD_ACCESS_FILE, 'utf-8'))
+    }
+    if (!access.groups) access.groups = {}
+
+    // Skip if already registered
+    if (access.groups[channelId]) return
+
+    // Use the same allowFrom as existing groups, or fall back to allowFrom list
+    const existingGroup = Object.values(access.groups)[0] as any
+    const allowFrom = existingGroup?.allowFrom || access.allowFrom || []
+
+    access.groups[channelId] = {
+      requireMention: false,
+      allowFrom,
+    }
+
+    writeFileSync(DISCORD_ACCESS_FILE, JSON.stringify(access, null, 2) + '\n', 'utf-8')
+    console.error(`[tools] Added channel ${channelId} to Discord access.json`)
+  } catch (err) {
+    console.error(`[tools] Failed to update Discord access.json:`, err)
+  }
+}
 
 const SEVERITY_EMOJI: Record<string, string> = {
   success: '\u2705',
@@ -197,6 +229,9 @@ async function handleCreateProjectChannel(state: ChannelState, name: string, con
     contextMessageId: contextMsg.id,
     context,
   })
+
+  // Auto-add new channel to Discord plugin's access.json so it can reply there
+  addChannelToDiscordAccess(channel.id)
 
   return {
     content: [{
