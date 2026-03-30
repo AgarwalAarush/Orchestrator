@@ -1,32 +1,35 @@
 # Claude Orchestrator
 
-A system that lets a main Claude Code session spawn, manage, and communicate with multiple long-running worker Claude Code sessions, controlled through a Discord server.
+Multi-worker Claude Code orchestrator controlled via Discord.
 
-## Project Structure
+## Architecture
 
-- `DESIGN.md` — Full architecture design document
-- `~/.claude-orchestrator/` — Runtime directory (bin, channel, templates, workers, projects)
+- **Official Discord plugin** handles all Discord ↔ Claude messaging
+- **Companion MCP server** (`channel/src/`) provides orchestrator tools + HTTP listener on :9111
+- **orch CLI** (`bin/orch`) manages worker lifecycle via tmux
+- **Main session** is a thin router — routes project messages to workers, relays responses back
+- **Workers** are full Claude Code sessions in tmux with project memory
 
-## Tech Stack
+## Key Rules
 
-- TypeScript (MCP server + Discord bot)
-- Bash (orch CLI)
-- discord.js, @modelcontextprotocol/sdk, zod
-- tmux for worker session management
+- Main session NEVER does project work (SSH, code, SLURM). Routes to workers.
+- Every project channel message goes to that project's dedicated worker.
+- Workers post responses via `curl POST localhost:9111/notify`.
+- Memory is file-based markdown with YAML frontmatter at `~/.claude-orchestrator/memory/`.
 
-## Development Workflow
+## Development
 
-- **Commit frequently** — make small, incremental commits as you work on features. Don't wait until a feature is fully complete to commit. Each logical change (new file, working function, passing test) should be its own commit.
-- **Commit messages** should be concise and describe the "why", not just the "what".
-- **Never commit** `.env` files, bot tokens, or credentials.
+- **Commit frequently** with concise messages.
+- **Never commit** `.env`, bot tokens, or credentials.
+- TypeScript changes: `cd channel && npx tsc --noEmit` to type-check.
+- After changes: `bash install.sh` to copy to `~/.claude-orchestrator/`.
+- Restart `claude --channels` session to pick up instruction changes.
 
-## Key Concepts
+## File Locations
 
-- **Workers** run in tmux sessions and communicate via inbox/outbox files + HTTP notifications
-- **Projects** map to Discord channels with pinned context that gets injected into worker prompts
-- **Channel server** is a single process: discord.js bot + MCP server + HTTP listener
-- Worker threads in Discord route **directly** to workers (no main session middleman)
-
-## Implementation Phases
-
-See `DESIGN.md` for the full plan. Current phase: Phase 1 (Foundation).
+- CLI: `bin/orch`
+- Companion server: `channel/src/server.ts` (entry), `tools.ts`, `http.ts`, `state.ts`
+- Templates: `templates/*.md` (frontmatter `default_model` sets per-template model)
+- Runtime: `~/.claude-orchestrator/` (installed by `install.sh`)
+- Discord state: `~/.claude-orchestrator/channel-state.json`
+- Discord access: `~/.claude/channels/discord/access.json`

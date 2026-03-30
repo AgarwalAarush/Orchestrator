@@ -1,156 +1,294 @@
-# Claude Orchestrator
+# Claude Code Orchestrator
 
-A system that lets a main Claude Code session spawn, manage, and communicate with multiple long-running worker Claude Code sessions — all controlled through a Discord server.
+Spawn, manage, and communicate with multiple long-running Claude Code worker sessions — all controlled through Discord from any device.
 
-Coordinate complex multi-worker tasks from any device (phone, tablet, laptop) through Discord messaging. Workers run autonomously in tmux sessions and communicate back through Discord threads.
+Each project gets its own persistent worker with isolated context, accumulated memory, and SSH access to remote servers. Workers run autonomously in tmux and communicate back through Discord.
 
-## How It Works
+## Architecture
 
 ```
-Discord                          Local Machine
-┌─────────────┐                  ┌──────────────────────┐
-│ #main       │ ◄──────────────► │ Main Claude Session  │
-│ #project-x  │                  │                      │
-│  └─ worker1 │ ◄─── direct ──► │ tmux: worker1        │
-│  └─ worker2 │ ◄─── direct ──► │ tmux: worker2        │
-│ #notifs     │ ◄── updates ──  │ tmux: worker3        │
-└─────────────┘                  └──────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                         DISCORD SERVER                            │
+│                                                                  │
+│  #main ──────────────── Orchestration commands                   │
+│  #notifications ──────── Worker update feed                      │
+│                                                                  │
+│  Projects/                                                       │
+│  ├── #moe-research ──── All messages route to moe-research worker│
+│  └── #personal-website ─ All messages route to website worker    │
+│                                                                  │
+│  #tasks ──────────────── One-off workers (not project-scoped)    │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │
+                         Discord API
+                               │
+┌──────────────────────────────┼───────────────────────────────────┐
+│  YOUR MACHINE                │                                    │
+│                              ▼                                    │
+│  ┌────────────────────────────────────────────┐                  │
+│  │  OFFICIAL DISCORD PLUGIN (channel)         │                  │
+│  │  Handles all Discord ↔ Claude messaging    │                  │
+│  │  Tools: reply, react, edit, fetch_messages │                  │
+│  │  Permission relay (approve from phone)     │                  │
+│  └──────────────────┬─────────────────────────┘                  │
+│                     │                                             │
+│                     ▼                                             │
+│  ┌────────────────────────────────────────────┐                  │
+│  │  MAIN CLAUDE SESSION (thin router)         │                  │
+│  │                                            │                  │
+│  │  #main messages → handles directly         │                  │
+│  │  Project messages → routes to worker       │                  │
+│  │  Worker notifications → relays to Discord  │                  │
+│  │                                            │                  │
+│  │  Does NOT do project work itself.          │                  │
+│  └─────┬──────────────────────────┬───────────┘                  │
+│        │ bash (orch CLI)          │ stdio (MCP)                  │
+│        ▼                          ▼                              │
+│  ┌──────────────┐    ┌─────────────────────────┐                 │
+│  │  ORCH CLI    │    │  COMPANION MCP SERVER    │                 │
+│  │              │    │                          │                 │
+│  │  spawn       │    │  HTTP :9111              │                 │
+│  │  send        │    │  ← workers POST updates  │                 │
+│  │  kill        │    │  → Discord REST API      │                 │
+│  │  status      │    │  → relay to main session │                 │
+│  │  list        │    │                          │                 │
+│  │  project     │    │  Tools:                  │                 │
+│  │  memory      │    │  create_worker_thread    │                 │
+│  └──────┬───────┘    │  update_status           │                 │
+│         │            │  post_notification        │                 │
+│    tmux manages      │  create_project_channel   │                 │
+│    all workers       │  route_to_worker          │                 │
+│         │            └─────────────▲─────────────┘                │
+│         │                          │                              │
+│  ┌──────┼──────────────────────────┼────────────────────┐        │
+│  │      ▼              curl :9111  │                    │        │
+│  │  ┌─────────┐    ┌─────────┐    │    ┌─────────┐     │        │
+│  │  │ worker  │    │ worker  │    │    │ worker  │     │        │
+│  │  │ moe-    │    │ personal│    │    │ one-off │     │        │
+│  │  │ research│    │ -website│    │    │ task    │     │        │
+│  │  │ (tmux)  │    │ (tmux)  │    │    │ (tmux)  │     │        │
+│  │  │         │    │         │    │    │         │     │        │
+│  │  │ Claude  │    │ Claude  │    │    │ Claude  │     │        │
+│  │  │ Code    │    │ Code    │    │    │ Code    │     │        │
+│  │  │ session │    │ session │    │    │ session │     │        │
+│  │  └────┬────┘    └────┬────┘    │    └────┬────┘     │        │
+│  │       │              │         │         │          │        │
+│  │       ▼              ▼         │         ▼          │        │
+│  │    ssh to         local      posts    any task      │        │
+│  │    SLURM          code       updates                │        │
+│  │    cluster        changes                           │        │
+│  └─────────────────────────────────────────────────────┘        │
+│                                                                  │
+│  ┌────────────────────────────────────────────┐                  │
+│  │  MEMORY SYSTEM (file-based, persistent)    │                  │
+│  │                                            │                  │
+│  │  ~/.claude-orchestrator/memory/user/        │                  │
+│  │    SSH configs, preferences, patterns      │                  │
+│  │                                            │                  │
+│  │  ~/.claude-orchestrator/projects/*/memory/  │                  │
+│  │    Per-project learnings, what worked/not  │                  │
+│  │                                            │                  │
+│  │  Injected into worker prompts at spawn.    │                  │
+│  │  Workers write new memories mid-task.      │                  │
+│  └────────────────────────────────────────────┘                  │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-- **#main** — Talk to the orchestrator to create projects and spawn workers
-- **Project channels** — Scoped context shared with all workers in that project
-- **Worker threads** — Route **directly** to worker inboxes (no main session bottleneck)
-- **#notifications** — Glanceable feed of worker updates with emoji status
+## Message Flow
 
-## Key Features
+```
+You message in #moe-research: "check job status"
+       │
+       ▼
+Official Discord plugin pushes to main session
+       │
+       ▼
+Main session checks: is this a project channel? Yes → moe-research
+       │
+       ▼
+Is there a running worker for moe-research?
+       │
+       ├── Yes → route_to_worker("moe-research", "check job status")
+       │
+       └── No  → orch spawn moe-research ... --project moe-research
+                  route_to_worker("moe-research", "check job status")
+       │
+       ▼
+Worker receives message in inbox, does the work:
+  ssh aarusha@login.babel.cs.cmu.edu "squeue -u aarusha"
+       │
+       ▼
+Worker posts response:
+  curl POST localhost:9111/notify
+  {"worker":"moe-research","event":"update","summary":"Job 6874557 running, step 3660/4056..."}
+       │
+       ▼
+Companion server receives, posts to Discord + notifies main session
+       │
+       ▼
+Main session relays to #moe-research via Discord reply tool
+       │
+       ▼
+You see the response in Discord
+```
 
-- **Direct worker communication** — Messages in worker threads go straight to the worker via inbox files + tmux nudge, scaling to 8+ concurrent workers
-- **Projects** — Discord channels with pinned context that gets injected into every worker's prompt
-- **Autonomous workers** — Workers run in tmux, survive terminal close and laptop sleep, and post updates back to Discord
-- **Mobile-friendly** — Control everything from your phone through Discord
+## Features
 
-## Tech Stack
-
-- **CLI**: Bash (`bin/orch`)
-- **Channel Server**: TypeScript (discord.js + MCP SDK)
-- **Process Management**: tmux
-- **State**: JSON files on disk
+- **Project isolation** — Each project gets its own Claude worker with dedicated context window
+- **Persistent memory** — Learnings accumulate across sessions (SSH configs, experiment results, decisions)
+- **Discord control** — Manage everything from your phone
+- **Autonomous workers** — Run in tmux, survive terminal close, SSH into remote servers
+- **Smart model selection** — Templates default to the right model (haiku for monitoring, opus for code)
+- **Worker notifications** — Updates posted to Discord + #notifications feed
+- **Permission relay** — Approve tool use from Discord on your phone
 
 ## Setup
 
 ### Prerequisites
 
 ```bash
-brew install tmux node
+brew install tmux
 ```
 
-### 1. Discord Bot
-
-1. Create a Discord server
-2. Create a bot at https://discord.com/developers/applications
-3. Enable **Message Content Intent**
-4. Add bot to your server with permissions: View Channels, Send Messages, Send/Create/Manage Threads, Manage Channels, Read Message History, Attach Files, Add Reactions, Embed Links
-5. Create channels: `#main`, `#notifications`, `#tasks`
-
-### 2. Install
+### 1. Install
 
 ```bash
-# Set up runtime directory
-mkdir -p ~/.claude-orchestrator/{bin,channel,templates,hooks,workers,projects}
-
-# Copy files from this repo to ~/.claude-orchestrator/
-# Make CLI executable
-chmod +x ~/.claude-orchestrator/bin/orch
+git clone <this-repo>
+cd claude-orchestrator
+bash install.sh
 ```
 
-### 3. Channel Server
+### 2. Discord
 
+Install the official Discord plugin in Claude Code:
+```
+/plugin install discord@claude-plugins-official
+/discord:configure <your-bot-token>
+/discord:access pair <code>       # after DMing the bot
+/discord:access policy allowlist  # lock it down
+```
+
+Create a Discord server with channels: `#main`, `#notifications`, `#tasks`.
+Or run the setup script to create them automatically:
 ```bash
 cd ~/.claude-orchestrator/channel
-npm install
-
-# Configure
-cp .env.example .env
-# Edit .env with your DISCORD_BOT_TOKEN and GUILD_ID
-
-# Run
-npm run dev
+DISCORD_BOT_TOKEN=<token> GUILD_ID=<id> npx tsx src/setup.ts
 ```
 
-### 4. Launch Main Session
+### 3. Register Companion Server
 
 ```bash
-claude --channels orchestrator-discord \
-       --dangerously-load-development-channels \
-       --name "orchestrator"
+claude mcp add-json -s user orchestrator-companion '{
+  "command": "npx",
+  "args": ["--prefix", "~/.claude-orchestrator/channel", "tsx",
+           "~/.claude-orchestrator/channel/src/server.ts"],
+  "env": {
+    "DISCORD_BOT_TOKEN": "<your-token>",
+    "GUILD_ID": "<your-guild-id>",
+    "NOTIFICATIONS_CHANNEL_ID": "<id>",
+    "TASKS_CHANNEL_ID": "<id>",
+    "ORCH_PORT": "9111",
+    "ORCH_HOME": "~/.claude-orchestrator"
+  }
+}'
 ```
 
-## Usage
+### 4. Launch
 
-**Create a project:**
-> You in #main: "create a project for my ML training work on cluster.edu"
->
-> Bot creates #ml-training with pinned context
+```bash
+claude --channels plugin:discord@claude-plugins-official \
+       --dangerously-load-development-channels server:orchestrator-companion
+```
 
-**Spawn a worker:**
-> You in #main: "spawn a worker in #ml-training to start training run 005"
->
-> Bot creates worker thread and starts a tmux session
+## CLI Reference
 
-**Direct a worker in real-time:**
-> You in worker thread: "also log learning rate to CSV each epoch"
->
-> Worker reads directive from inbox and adapts
+```
+orch spawn <name> <dir> <prompt> [options]    Spawn a worker
+  --ssh <user@host>                           SSH target
+  --project <name>                            Attach to project
+  --template <name>                           Template (default|slurm-monitor|code-worker|ssh-worker)
+  --model <model>                             Model override
 
-**Monitor at a glance:**
-> #notifications shows:
-> - :white_check_mark: [gpu-train-005] 76.8% top-1. New best.
-> - :hourglass_flowing_sand: [eval-pipeline] Evaluating checkpoint 3/5
+orch send <name> <message>                    Send directive to worker
+orch status [name]                            Show worker status
+orch list                                     List all workers
+orch logs <name> [--tail N]                   Show terminal output
+orch kill <name> [--rm]                       Stop worker (--rm removes state)
+orch cleanup                                  Remove dead workers >24h
 
-## Project Structure
+orch project create <name> <context>          Create project
+orch project update <name> <context>          Update context
+orch project link <name> <chan_id> <msg_id>   Link to Discord
+orch project archive <name>                   Archive project
+orch project list                             List projects
+
+orch memory list [--user] [--project <name>]  List memories
+orch memory show <layer>:<id>                 Show memory file
+orch memory rebuild [--all]                   Rebuild indexes
+orch memory promote <worker> <id> --to <dst>  Promote worker memory
+orch memory add <layer> <id> <title> [opts]   Create memory
+```
+
+## Templates & Model Selection
+
+| Template | Default Model | Use For |
+|----------|--------------|---------|
+| `default` | sonnet | General purpose |
+| `slurm-monitor` | haiku | Job monitoring, status polling |
+| `code-worker` | opus | Code refactoring, implementation |
+| `ssh-worker` | sonnet | Remote server tasks |
+
+Templates have YAML frontmatter with `default_model`. Override with `--model`.
+
+## Memory System
+
+File-based persistent memory with YAML frontmatter:
 
 ```
 ~/.claude-orchestrator/
-├── bin/orch              # CLI for worker lifecycle
-├── channel/              # Discord bot + MCP server
-│   └── src/
-│       ├── server.ts     # Entry point
-│       ├── discord-rest.ts # Discord API wrapper
-│       ├── tools.ts      # MCP tools
-│       ├── state.ts      # State persistence
-│       └── http.ts       # HTTP listener for worker updates
-├── templates/            # Worker system prompt templates
-├── hooks/                # Claude Code hooks (inbox check, heartbeat)
-├── workers/              # Runtime worker directories
-├── projects/             # Project metadata
-└── config.json           # Global config
+├── memory/user/              # Global: SSH configs, preferences
+├── memory/patterns/          # Cross-project recurring patterns
+└── projects/*/memory/        # Per-project: learnings, decisions, warnings
 ```
 
-## Next Steps
+Memory indexes are injected into worker system prompts at spawn time.
+Workers can write new memories mid-task. Categories: `environment`,
+`experiment-result`, `decision`, `preference`, `procedure`, `warning`, `reference`.
 
-### Intelligent Model Routing
+## File Structure
 
-Not every task needs the same model. The orchestrator should analyze incoming tasks and automatically select the right Anthropic model:
+```
+~/.claude-orchestrator/
+├── bin/orch                  # CLI (bash)
+├── channel/
+│   └── src/
+│       ├── server.ts         # Companion MCP server entry point
+│       ├── discord-rest.ts   # Discord REST API (no gateway)
+│       ├── tools.ts          # MCP tools for Claude
+│       ├── state.ts          # Persisted state (projects, workers)
+│       ├── http.ts           # HTTP :9111 for worker notifications
+│       ├── direct.ts         # Direct worker inbox routing
+│       ├── monitor.ts        # Heartbeat stale worker detection
+│       └── setup.ts          # One-time Discord channel setup
+├── templates/
+│   ├── default.md            # General worker template
+│   ├── slurm-monitor.md      # SLURM monitoring (haiku)
+│   ├── code-worker.md        # Code work (opus)
+│   └── ssh-worker.md         # SSH remote (sonnet)
+├── hooks/
+│   └── notify-main.sh        # PostToolUse: heartbeat + inbox check
+├── memory/
+│   ├── user/                 # Global user memories
+│   └── patterns/             # Cross-project patterns
+├── projects/                 # Project metadata + memory
+├── workers/                  # Runtime worker state
+└── config.json               # Global configuration
+```
 
-| Model | Best For | Examples |
-|-------|----------|---------|
-| **Haiku** | Monitoring, status checks, simple file ops | `slurm-watch`, log tailing, health checks |
-| **Sonnet** | Standard code tasks, moderate reasoning | Feature implementation, refactoring, test writing |
-| **Opus** | Complex architecture, multi-file reasoning, ambiguous specs | System design, debugging subtle issues, cross-repo changes |
+## Design Documents
 
-The routing system will classify tasks by complexity signals (scope, ambiguity, reasoning depth) and select the cheapest model that can handle the job. Workers can also escalate mid-task — a Haiku monitor that detects an anomaly can flag it for an Opus worker to investigate.
-
-### Remaining Implementation
-
-- **Permission relay** — Surface Claude Code permission requests in Discord worker threads for approval
-- **State recovery** — Persist channel server state to disk, reload on restart
-- **iMessage integration** — Lightweight pings to Apple devices on worker completion/error
-- **Heartbeat monitoring** — Detect dead workers and alert in Discord
-- **Worker-to-worker communication** — Shared project state or direct inbox routing between workers
-- **Rich embeds** — Better-formatted status messages and notifications in Discord
-- **Discord rate limit handling** — Debounce with 8+ concurrent workers
-
-See [DESIGN.md](DESIGN.md) for the full architecture and phased implementation plan.
+- [DESIGN.md](DESIGN.md) — Full architecture, communication flows, Discord server structure
+- [MEMORY-DESIGN.md](MEMORY-DESIGN.md) — Memory system architecture, file format, lifecycle
 
 ## License
 
