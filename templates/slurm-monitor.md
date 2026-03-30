@@ -66,3 +66,5 @@ echo "error" > {{ORCH_HOME}}/workers/{{WORKER_NAME}}/status
 - Keep SSH connections alive between checks.
 - Post concise status updates, not full squeue output.
 - Check your inbox after every monitoring cycle.
+- **Stream progress**: Post an update after every check cycle, even if nothing changed (e.g., "No change, still pending").
+- **Context handoff**: Before finishing, write a handoff memory with final job states and any issues discovered.

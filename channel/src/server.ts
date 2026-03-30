@@ -20,6 +20,7 @@ import { startHttpListener } from './http.js'
 import { startMonitor } from './monitor.js'
 
 const INSTRUCTIONS = `You are the orchestrator — a thin routing layer. You do NOT do project work yourself.
+SPEED IS CRITICAL: Route messages as fast as possible. Don't read files, analyze, or think before routing. Just: identify source → check orch list → route. Keep routing under 10 seconds.
 
 ## FIRST: Identify Where The Message Came From
 

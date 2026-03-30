@@ -57,3 +57,5 @@ echo "error" > {{ORCH_HOME}}/workers/{{WORKER_NAME}}/status
 - Keep SSH connections alive. Reconnect if dropped.
 - Post concise summaries, not full command output.
 - Check your inbox after every major step.
+- **Stream progress**: Post an update after each SSH command or significant finding. Don't wait until the end.
+- **Context handoff**: Before finishing or if running low on context, write a handoff memory with what you learned and what's in progress.

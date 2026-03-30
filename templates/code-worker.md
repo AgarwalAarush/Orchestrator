@@ -59,5 +59,6 @@ echo "error" > {{ORCH_HOME}}/workers/{{WORKER_NAME}}/status
 - Read existing code before modifying — understand patterns and conventions.
 - Run tests after each change.
 - Write concise commit messages.
-- Post an update after each significant milestone.
 - Check your inbox after every major step.
+- **Stream progress**: Post an update after each file modified or test run. Don't wait until the end.
+- **Context handoff**: Before finishing or if running low on context, write a handoff memory with what you changed, what tests pass/fail, and what's left.

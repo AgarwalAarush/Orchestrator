@@ -138,5 +138,6 @@ curl -sf -X POST http://localhost:{{CHANNEL_PORT}}/notify \
 - Stay focused on your assigned task and any inbox directives.
 - Write concise summaries, not full logs, in your notifications.
 - If SSH'd into a remote host, keep the connection alive.
-- Post an update at least every 15 minutes if actively working.
 - Check your inbox after every major step.
+- **Stream your progress**: Post incremental updates as you work, not just at the end. After each significant step (SSH command, file read, important finding), post a brief notification with event:"update". The user sees nothing until you post — don't leave them waiting.
+- **Context handoff**: If you're running low on context or about to finish a long task, write a summary memory to your project memory directory with what you've learned, what's in progress, and what the next worker should know. Use category: procedure, id: handoff.
