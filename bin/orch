@@ -541,6 +541,11 @@ cmd_status() {
   echo "Inbox:     $inbox_count pending directive(s)"
   echo "Outbox:    $outbox_count update(s)"
 
+  # Tool usage
+  local tool_count=0
+  [ -f "$worker_dir/tool_count" ] && tool_count=$(<"$worker_dir/tool_count")
+  echo "Tools:     $tool_count calls"
+
   # tmux status
   echo ""
   if tmux_session_exists "$tmux_name"; then
@@ -666,6 +671,30 @@ cmd_kill() {
     fi
   else
     echo "Worker '$name' tmux session already gone."
+  fi
+
+  # Auto-promote worker memories to project before cleanup
+  if [ -d "$worker_dir/memory" ] && command -v jq &>/dev/null; then
+    local project_name
+    project_name=$(jq -r '.project // empty' "$worker_dir/meta.json" 2>/dev/null)
+    if [ -n "$project_name" ]; then
+      local project_mem_dir="$ORCH_HOME/projects/$project_name/memory"
+      mkdir -p "$project_mem_dir"
+      shopt -s nullglob
+      local promoted=0
+      for mem_file in "$worker_dir/memory"/*.md; do
+        local mem_base
+        mem_base=$(basename "$mem_file")
+        [ "$mem_base" = "_index.md" ] && continue
+        cp "$mem_file" "$project_mem_dir/$mem_base"
+        promoted=$((promoted + 1))
+      done
+      shopt -u nullglob
+      if [ "$promoted" -gt 0 ]; then
+        rebuild_memory_index "$project_mem_dir" "Project: $project_name"
+        echo "Promoted $promoted memory file(s) to project '$project_name'."
+      fi
+    fi
   fi
 
   if [ "$remove" = true ]; then

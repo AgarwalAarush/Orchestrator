@@ -1,6 +1,6 @@
 #!/bin/bash
 # PostToolUse hook for Claude Code Orchestrator workers.
-# Updates heartbeat and checks inbox for new directives.
+# Updates heartbeat, tracks tool usage, and checks inbox for new directives.
 # Expects ORCH_WORKER_NAME and ORCH_HOME to be set in the environment.
 
 WORKER_NAME="${ORCH_WORKER_NAME:-}"
@@ -18,6 +18,11 @@ fi
 
 # Update heartbeat
 date +%s > "$WORKER_DIR/heartbeat" 2>/dev/null
+
+# Track tool use count
+TOOL_COUNT=$(cat "$WORKER_DIR/tool_count" 2>/dev/null || echo 0)
+TOOL_COUNT=$((TOOL_COUNT + 1))
+echo "$TOOL_COUNT" > "$WORKER_DIR/tool_count" 2>/dev/null
 
 # Check for unread inbox messages
 INBOX_COUNT=0
