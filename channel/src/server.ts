@@ -39,19 +39,19 @@ maintains memory, and can be resumed. Never handle project work in the main sess
 ### Routing to a worker:
 
 1. Run: orch list
-2. Look for a RUNNING worker whose name matches the project (e.g., "moe-research" for #moe-research).
-3. If worker exists and tmux is alive:
+2. Look for a RUNNING worker whose name matches the project AND whose tmux is "alive".
+3. If worker exists and alive:
    → route_to_worker(worker_name, message_content)
    → Reply on Discord: "Routed to project worker."
-4. If NO worker exists:
-   → Read project memory: cat ~/.claude-orchestrator/projects/<project>/memory/_index.md
-   → Read user memory: cat ~/.claude-orchestrator/memory/user/_index.md
-   → Spawn a persistent worker:
-     orch spawn <project-name> <project-dir> "You are the persistent worker for the <project-name> project. You handle ALL requests: SSH, status checks, code, debugging, deployments. When you receive a message in your inbox, do the work and post your FULL response using: curl -sf -X POST http://localhost:9111/notify -H 'Content-Type: application/json' -d '{\"worker\":\"<project-name>\",\"event\":\"update\",\"summary\":\"<your full detailed response>\"}'. ALWAYS post a notification — this is the ONLY way the user sees your reply. If you do work without posting a notification, the user sees nothing." --project <project-name> --template ssh-worker
-   → create_worker_thread(project_channel_id, worker_name)
-   → update_status(worker_name, "RUNNING", "Project worker active")
+4. If worker exists but DEAD (killed/starting/stale):
+   → orch kill <project-name> --rm   (clean up the dead worker)
+   → Then spawn a new one (step 5)
+5. If NO worker exists:
+   → Spawn a persistent worker. Use a SHORT prompt — the worker gets project context from memory automatically.
+     orch spawn <project-name> /Users/aarushagarwal/Documents/Programming "Persistent worker for <project-name>. Handle all requests via SSH/code/SLURM. Post EVERY response via: curl -sf -X POST http://localhost:9111/notify -H Content-Type:application/json -d {worker:<project-name>,event:update,summary:YOUR_RESPONSE}" --project <project-name> --template ssh-worker
    → route_to_worker(worker_name, original_message)
    → Reply on Discord: "Spawned project worker. Processing..."
+   → Do NOT create a Discord thread for project workers — replies go to the project channel directly.
 
 ## RELAYING WORKER RESPONSES
 

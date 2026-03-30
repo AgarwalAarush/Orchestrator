@@ -122,14 +122,35 @@ render_template() {
   # Remove any remaining {{/if}} markers
   content=$(printf '%s\n' "$content" | sed 's/{{\/if}}//g')
 
-  # Second pass: simple placeholder substitution
+  # Second pass: placeholder substitution using awk (handles multi-line values safely)
   for pair in "$@"; do
     local key="${pair%%=*}"
     local val="${pair#*=}"
-    # Escape sed special chars in val
-    local escaped_val
-    escaped_val=$(printf '%s' "$val" | sed 's/[&/\]/\\&/g')
-    content=$(printf '%s\n' "$content" | sed "s|{{${key}}}|${escaped_val}|g")
+    # Write value to temp file so awk can read it (avoids shell escaping issues)
+    local val_file
+    val_file=$(mktemp)
+    printf '%s' "$val" > "$val_file"
+    content=$(printf '%s\n' "$content" | awk -v placeholder="{{${key}}}" -v valfile="$val_file" '
+      BEGIN {
+        val = ""
+        while ((getline line < valfile) > 0) {
+          if (val != "") val = val "\n"
+          val = val line
+        }
+        close(valfile)
+      }
+      {
+        idx = index($0, placeholder)
+        if (idx > 0) {
+          before = substr($0, 1, idx - 1)
+          after = substr($0, idx + length(placeholder))
+          print before val after
+        } else {
+          print
+        }
+      }
+    ')
+    rm -f "$val_file"
   done
 
   printf '%s\n' "$content"
@@ -611,8 +632,10 @@ cmd_logs() {
 }
 
 cmd_kill() {
-  [ $# -ge 1 ] || die "Usage: orch kill <name>"
+  [ $# -ge 1 ] || die "Usage: orch kill <name> [--rm]"
   local name="$1"
+  local remove=false
+  [ "${2:-}" = "--rm" ] && remove=true
 
   require_worker "$name"
 
@@ -642,7 +665,12 @@ cmd_kill() {
     echo "Worker '$name' tmux session already gone."
   fi
 
-  echo "killed" > "$worker_dir/status"
+  if [ "$remove" = true ]; then
+    rm -rf "$worker_dir"
+    echo "Worker '$name' removed."
+  else
+    echo "killed" > "$worker_dir/status"
+  fi
 }
 
 cmd_cleanup() {
