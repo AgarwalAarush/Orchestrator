@@ -177,7 +177,10 @@ Worker commands:
   list                                    List all workers
   logs <name> [--tail N]                  Show worker terminal output
   kill <name>                             Gracefully stop a worker
+  attach <name>                           Attach to a worker's tmux session
   cleanup                                 Remove finished workers older than 24h
+  start                                   Start the orchestrator (tmux + Discord)
+  stop                                    Stop the orchestrator
   help                                    Show this help message
 
 Project commands:
@@ -1215,6 +1218,75 @@ MEMEOF
 }
 
 # =============================================================================
+# Attach
+# =============================================================================
+
+cmd_attach() {
+  [ $# -ge 1 ] || die "Usage: orch attach <name>"
+  local name="$1"
+  require_worker "$name"
+  local tmux_name="${TMUX_PREFIX}${name}"
+  tmux_session_exists "$tmux_name" || die "tmux session '$tmux_name' not found. Worker may have exited."
+  exec tmux attach -t "$tmux_name"
+}
+
+# =============================================================================
+# Start / Stop orchestrator
+# =============================================================================
+
+cmd_start() {
+  require_tmux
+  require_claude
+
+  local tmux_name="orch-main"
+
+  if tmux_session_exists "$tmux_name"; then
+    echo "Orchestrator already running in tmux session '$tmux_name'."
+    echo "  Attach with: tmux attach -t $tmux_name"
+    return
+  fi
+
+  tmux new-session -d -s "$tmux_name"
+
+  # Launch claude with channels
+  local launch_cmd="claude --channels plugin:discord@claude-plugins-official --dangerously-load-development-channels server:orchestrator-companion"
+  tmux send-keys -t "$tmux_name" "$launch_cmd" Enter
+
+  # Wait for the dev channels confirmation prompt, accept it
+  sleep 3
+  tmux send-keys -t "$tmux_name" Enter
+
+  echo "Orchestrator starting in tmux session '$tmux_name'."
+  echo "  Attach: tmux attach -t $tmux_name"
+  echo "  Stop:   orch stop"
+}
+
+cmd_stop() {
+  local tmux_name="orch-main"
+
+  if ! tmux_session_exists "$tmux_name"; then
+    echo "Orchestrator is not running."
+    return
+  fi
+
+  tmux send-keys -t "$tmux_name" "/exit" Enter
+
+  local waited=0
+  while [ $waited -lt 5 ]; do
+    sleep 1
+    waited=$((waited + 1))
+    tmux_session_exists "$tmux_name" || break
+  done
+
+  if tmux_session_exists "$tmux_name"; then
+    tmux kill-session -t "$tmux_name" 2>/dev/null || true
+    echo "Orchestrator force-stopped."
+  else
+    echo "Orchestrator stopped."
+  fi
+}
+
+# =============================================================================
 # Main dispatch
 # =============================================================================
 
@@ -1226,6 +1298,9 @@ case "${1:-help}" in
   logs)    shift; cmd_logs "$@" ;;
   kill)    shift; cmd_kill "$@" ;;
   cleanup) shift; cmd_cleanup "$@" ;;
+  attach)  shift; cmd_attach "$@" ;;
+  start)   shift; cmd_start "$@" ;;
+  stop)    shift; cmd_stop "$@" ;;
   project) shift; cmd_project "$@" ;;
   memory)  shift; cmd_memory "$@" ;;
   help|-h|--help) cmd_help ;;
