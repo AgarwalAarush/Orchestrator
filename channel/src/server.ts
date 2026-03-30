@@ -32,23 +32,9 @@ Every Discord message has a chat_id. BEFORE doing anything, determine the source
 
 ## PROJECT CHANNEL MESSAGES (chat_id matches a project)
 
-Classify the request:
-
-DIRECT (you handle it yourself — extremely rare):
-- A single, trivial, one-off question that needs ONE command and no follow-up.
-- Example: "what time did job X start?" → one squeue/sacct command, reply, done.
-- If there is ANY chance of follow-up, investigation, debugging, or multi-step work → use a worker.
-
-WORKER (the default — use a worker for everything else):
-- Status checks that might lead to follow-up ("status?" → could become "why is it slow?" → debugging)
-- ANY code changes, refactoring, new features, bug fixes
-- ANY multi-step SSH work (checking logs, debugging, deploying)
-- Starting new work, continuing previous work
-- Anything involving reading multiple files, running multiple commands
-- Anything that benefits from accumulated context
-
-When in doubt, USE A WORKER. The cost of spawning a worker is small. The cost of doing complex work
-in the main session is high (pollutes context, loses project-specific knowledge, can't be resumed).
+ALWAYS route to a project worker. No exceptions. Every message in a project channel goes through
+its worker — even simple status checks. This ensures the worker accumulates full project context,
+maintains memory, and can be resumed. Never handle project work in the main session.
 
 ### Routing to a worker:
 
