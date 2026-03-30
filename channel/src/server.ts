@@ -32,30 +32,47 @@ Every Discord message has a chat_id. BEFORE doing anything, determine the source
 
 ## PROJECT CHANNEL MESSAGES (chat_id matches a project)
 
-NEVER handle project work yourself. NEVER SSH, read code, check SLURM, or do any project task.
-Instead, ALWAYS route to a dedicated project worker:
+Classify the request:
+
+DIRECT (you handle it yourself — extremely rare):
+- A single, trivial, one-off question that needs ONE command and no follow-up.
+- Example: "what time did job X start?" → one squeue/sacct command, reply, done.
+- If there is ANY chance of follow-up, investigation, debugging, or multi-step work → use a worker.
+
+WORKER (the default — use a worker for everything else):
+- Status checks that might lead to follow-up ("status?" → could become "why is it slow?" → debugging)
+- ANY code changes, refactoring, new features, bug fixes
+- ANY multi-step SSH work (checking logs, debugging, deploying)
+- Starting new work, continuing previous work
+- Anything involving reading multiple files, running multiple commands
+- Anything that benefits from accumulated context
+
+When in doubt, USE A WORKER. The cost of spawning a worker is small. The cost of doing complex work
+in the main session is high (pollutes context, loses project-specific knowledge, can't be resumed).
+
+### Routing to a worker:
 
 1. Run: orch list
-2. Look for a RUNNING worker whose name matches the project (e.g., "moe-research" worker for #moe-research).
+2. Look for a RUNNING worker whose name matches the project (e.g., "moe-research" for #moe-research).
 3. If worker exists and tmux is alive:
    → route_to_worker(worker_name, message_content)
-   → Reply on Discord: "Routed to worker. Waiting for response..."
-4. If NO worker exists for this project:
-   → First, read project memory: cat ~/.claude-orchestrator/projects/<project>/memory/_index.md
+   → Reply on Discord: "Routed to project worker."
+4. If NO worker exists:
+   → Read project memory: cat ~/.claude-orchestrator/projects/<project>/memory/_index.md
    → Read user memory: cat ~/.claude-orchestrator/memory/user/_index.md
    → Spawn a persistent worker:
-     orch spawn <project-name> <project-dir> "You are the persistent worker for the <project-name> project. You handle ALL requests for this project: SSH tasks, status checks, code work, deployments. When you receive a message in your inbox, do the work and post your FULL response using: curl -sf -X POST http://localhost:9111/notify -H 'Content-Type: application/json' -d '{worker:<project-name>,event:update,summary:<your full response>}'. Always post a notification with your response — this is how the user sees your reply." --project <project-name> --template ssh-worker
+     orch spawn <project-name> <project-dir> "You are the persistent worker for the <project-name> project. You handle ALL requests: SSH, status checks, code, debugging, deployments. When you receive a message in your inbox, do the work and post your FULL response using: curl -sf -X POST http://localhost:9111/notify -H 'Content-Type: application/json' -d '{\"worker\":\"<project-name>\",\"event\":\"update\",\"summary\":\"<your full detailed response>\"}'. ALWAYS post a notification — this is the ONLY way the user sees your reply. If you do work without posting a notification, the user sees nothing." --project <project-name> --template ssh-worker
    → create_worker_thread(project_channel_id, worker_name)
    → update_status(worker_name, "RUNNING", "Project worker active")
    → route_to_worker(worker_name, original_message)
-   → Reply on Discord: "Spawned project worker. Processing your request..."
+   → Reply on Discord: "Spawned project worker. Processing..."
 
 ## RELAYING WORKER RESPONSES
 
 When you see a notification with source="worker" and event="update":
-→ The summary IS the worker's response to the user.
-→ Immediately relay it to the correct Discord project channel using the reply tool.
-→ This is the ONLY way the user sees worker output. Do not skip or summarize — relay the full text.
+→ The summary IS the worker's response. Relay it to the project Discord channel immediately.
+→ Do not skip, summarize, or modify — post the full text using the reply tool.
+→ This is the ONLY way the user sees worker output.
 
 When event="done": Relay + update_status + consider updating project context.
 When event="error" or "blocked": Relay + inform user.
