@@ -7,6 +7,9 @@ import * as discord from './discord-rest.js'
 import type { ChannelState } from './state.js'
 import { renderDashboard, getWorkersJson, getProjectsJson } from './dashboard.js'
 
+// Keep last 50 notifications in memory for the dashboard
+const notificationHistory: Array<{ worker: string; event: string; summary: string; timestamp: string }> = []
+
 const SEVERITY_EMOJI: Record<string, string> = {
   done: '\u2705',
   update: '\uD83D\uDCCB',
@@ -62,6 +65,29 @@ export function startHttpListener(port: number, mcp: Server, state: ChannelState
         res.end(JSON.stringify(getProjectsJson()))
         return
       }
+      // Worker logs: GET /api/logs/<name>?lines=50
+      const logsMatch = req.url?.match(/^\/api\/logs\/([a-zA-Z0-9_-]+)/)
+      if (logsMatch) {
+        const workerName = logsMatch[1]
+        try {
+          const output = execSync(
+            `tmux capture-pane -t "orch-${workerName}" -p -S -50 2>/dev/null || echo "(tmux session not found)"`,
+            { timeout: 5000 }
+          ).toString()
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ worker: workerName, logs: output }))
+        } catch {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ worker: workerName, logs: '(could not capture logs)' }))
+        }
+        return
+      }
+      // Notification history: GET /api/notifications
+      if (req.url === '/api/notifications') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(notificationHistory))
+        return
+      }
     }
 
     // POST /memory — worker signals a memory was created/updated
@@ -89,6 +115,15 @@ export function startHttpListener(port: number, mcp: Server, state: ChannelState
     try {
       const body = await parseBody(req)
       const data: WorkerNotification = JSON.parse(body)
+
+      // Store in notification history
+      notificationHistory.unshift({
+        worker: data.worker || '?',
+        event: data.event || '?',
+        summary: (data.summary || '').slice(0, 200),
+        timestamp: new Date().toISOString(),
+      })
+      if (notificationHistory.length > 50) notificationHistory.pop()
 
       if (!data.worker || !data.event || !data.summary) {
         res.writeHead(400)
