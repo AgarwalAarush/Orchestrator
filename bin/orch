@@ -183,6 +183,7 @@ Worker commands:
   cleanup                                 Remove finished workers older than 24h
   start                                   Start the orchestrator (tmux + Discord)
   stop                                    Stop the orchestrator
+  setup                                   Guided setup wizard (Discord, tokens, etc.)
   help                                    Show this help message
 
 Project commands:
@@ -1567,6 +1568,241 @@ cmd_stop() {
 }
 
 # =============================================================================
+# Interactive Setup
+# =============================================================================
+
+cmd_setup() {
+  echo ""
+  echo "╔══════════════════════════════════════════════════════════╗"
+  echo "║           ORCHESTRATOR SETUP                             ║"
+  echo "╚══════════════════════════════════════════════════════════╝"
+  echo ""
+
+  # Step 1: Check prerequisites
+  echo "STEP 1/7 — CHECKING PREREQUISITES"
+  echo "──────────────────────────────────"
+  local missing=false
+
+  if command -v tmux &>/dev/null; then
+    echo "  ✓ tmux $(tmux -V 2>/dev/null)"
+  else
+    echo "  ✗ tmux not found"
+    echo "    Install: brew install tmux"
+    missing=true
+  fi
+
+  if command -v claude &>/dev/null; then
+    echo "  ✓ claude $(claude --version 2>/dev/null)"
+  else
+    echo "  ✗ claude CLI not found"
+    echo "    Install: https://claude.ai/download"
+    missing=true
+  fi
+
+  if command -v node &>/dev/null; then
+    echo "  ✓ node $(node --version 2>/dev/null)"
+  else
+    echo "  ✗ node not found"
+    echo "    Install: brew install node"
+    missing=true
+  fi
+
+  if [ "$missing" = true ]; then
+    echo ""
+    echo "  Install missing prerequisites and re-run: orch setup"
+    return 1
+  fi
+  echo ""
+
+  # Step 2: Run install.sh
+  echo "STEP 2/7 — INSTALLING ORCHESTRATOR"
+  echo "───────────────────────────────────"
+  local repo_dir
+  repo_dir=$(cd "$(dirname "$(readlink -f "$(which orch)" 2>/dev/null || echo "$0")")" 2>/dev/null && cd .. && pwd)
+
+  if [ -f "$repo_dir/install.sh" ]; then
+    bash "$repo_dir/install.sh"
+  elif [ -f "$ORCH_HOME/../install.sh" ]; then
+    bash "$ORCH_HOME/../install.sh"
+  else
+    echo "  Orchestrator files already installed at $ORCH_HOME"
+  fi
+  echo ""
+
+  # Step 3: Discord plugin
+  echo "STEP 3/7 — DISCORD PLUGIN"
+  echo "─────────────────────────"
+  if [ -d "$HOME/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/discord" ]; then
+    echo "  ✓ Discord plugin already installed"
+  else
+    echo "  The Discord plugin connects Claude Code to your Discord server."
+    echo ""
+    echo "  Run this in a Claude Code session:"
+    echo "    /plugin install discord@claude-plugins-official"
+    echo "    /reload-plugins"
+    echo ""
+    echo -n "  Press Enter once you've installed the plugin (or 's' to skip): "
+    read -r response
+    if [ "$response" = "s" ]; then
+      echo "  Skipped."
+    fi
+  fi
+  echo ""
+
+  # Step 4: Discord bot token
+  echo "STEP 4/7 — DISCORD BOT SETUP"
+  echo "────────────────────────────"
+  if [ -f "$HOME/.claude/channels/discord/.env" ] && grep -q "DISCORD_BOT_TOKEN" "$HOME/.claude/channels/discord/.env" 2>/dev/null; then
+    echo "  ✓ Bot token already configured"
+  else
+    echo "  Create a Discord bot:"
+    echo "  1. Go to: https://discord.com/developers/applications"
+    echo "  2. Click 'New Application' → name it 'Claude Orchestrator'"
+    echo "  3. Go to 'Bot' tab → click 'Reset Token' → copy the token"
+    echo "  4. Enable 'Message Content Intent' under Privileged Gateway Intents"
+    echo "  5. Go to 'OAuth2 → URL Generator'"
+    echo "     - Scopes: bot"
+    echo "     - Permissions: View Channels, Send Messages, Send/Create/Manage Threads,"
+    echo "       Manage Channels, Read History, Attach Files, Add Reactions, Embed Links"
+    echo "  6. Copy the generated URL and open it to invite the bot to your server"
+    echo ""
+    echo -n "  Paste your bot token (or 's' to skip): "
+    read -r token
+    if [ "$token" != "s" ] && [ -n "$token" ]; then
+      mkdir -p "$HOME/.claude/channels/discord"
+      echo "DISCORD_BOT_TOKEN=$token" > "$HOME/.claude/channels/discord/.env"
+      chmod 600 "$HOME/.claude/channels/discord/.env"
+      echo "  ✓ Token saved"
+
+      # Configure via claude skill
+      echo ""
+      echo "  Now configure the plugin in a Claude Code session:"
+      echo "    /discord:configure $token"
+      echo ""
+      echo -n "  Press Enter once done (or 's' to skip): "
+      read -r response
+    else
+      echo "  Skipped."
+    fi
+  fi
+  echo ""
+
+  # Step 5: Discord server setup
+  echo "STEP 5/7 — DISCORD SERVER CHANNELS"
+  echo "───────────────────────────────────"
+  if [ -f "$ORCH_HOME/config.json" ] && command -v jq &>/dev/null; then
+    local main_id
+    main_id=$(jq -r '.discord.main_channel_id // empty' "$ORCH_HOME/config.json" 2>/dev/null)
+    if [ -n "$main_id" ]; then
+      echo "  ✓ Discord channels already configured"
+      echo "    main: $main_id"
+      echo "    notifications: $(jq -r '.discord.notifications_channel_id // "?"' "$ORCH_HOME/config.json")"
+      echo "    tasks: $(jq -r '.discord.tasks_channel_id // "?"' "$ORCH_HOME/config.json")"
+    else
+      echo "  Need to create #main, #notifications, #tasks channels."
+      echo ""
+      echo -n "  Enter your Discord server (guild) ID (right-click server → Copy Server ID): "
+      read -r guild_id
+      if [ -n "$guild_id" ] && [ "$guild_id" != "s" ]; then
+        echo "  Running setup script to create channels..."
+        if [ -f "$ORCH_HOME/channel/src/setup.ts" ]; then
+          local bot_token
+          bot_token=$(grep "DISCORD_BOT_TOKEN" "$HOME/.claude/channels/discord/.env" 2>/dev/null | cut -d= -f2)
+          if [ -n "$bot_token" ]; then
+            (cd "$ORCH_HOME/channel" && DISCORD_BOT_TOKEN="$bot_token" GUILD_ID="$guild_id" npx tsx src/setup.ts 2>&1)
+          else
+            echo "  ✗ No bot token found. Configure it first."
+          fi
+        else
+          echo "  ✗ Setup script not found. Run install.sh first."
+        fi
+      else
+        echo "  Skipped."
+      fi
+    fi
+  else
+    echo "  Run install.sh first to create config.json."
+  fi
+  echo ""
+
+  # Step 6: Pair Discord account
+  echo "STEP 6/7 — PAIR YOUR DISCORD ACCOUNT"
+  echo "─────────────────────────────────────"
+  if [ -f "$HOME/.claude/channels/discord/access.json" ] && command -v python3 &>/dev/null; then
+    local sender_count
+    sender_count=$(python3 -c "import json; d=json.load(open('$HOME/.claude/channels/discord/access.json')); print(len(d.get('allowFrom',[])))" 2>/dev/null || echo "0")
+    if [ "$sender_count" -gt 0 ]; then
+      echo "  ✓ $sender_count account(s) paired and allowlisted"
+    else
+      echo "  No accounts paired yet."
+      echo ""
+      echo "  In a Claude Code session with the Discord plugin loaded:"
+      echo "  1. Start Claude with: claude --channels plugin:discord@claude-plugins-official"
+      echo "  2. DM your bot on Discord — it will reply with a pairing code"
+      echo "  3. Run: /discord:access pair <code>"
+      echo "  4. Lock down: /discord:access policy allowlist"
+      echo ""
+      echo -n "  Press Enter once done (or 's' to skip): "
+      read -r response
+    fi
+  else
+    echo "  Complete steps 3-5 first."
+  fi
+  echo ""
+
+  # Step 7: Register companion server
+  echo "STEP 7/7 — COMPANION MCP SERVER"
+  echo "───────────────────────────────"
+  if claude mcp list 2>/dev/null | grep -q "orchestrator-companion"; then
+    echo "  ✓ Companion server already registered"
+  else
+    echo "  Registering the companion MCP server..."
+    local bot_token guild_id notif_id tasks_id
+    bot_token=$(grep "DISCORD_BOT_TOKEN" "$HOME/.claude/channels/discord/.env" 2>/dev/null | cut -d= -f2)
+    if [ -n "$bot_token" ] && command -v jq &>/dev/null && [ -f "$ORCH_HOME/config.json" ]; then
+      guild_id=$(jq -r '.discord.guild_id // empty' "$ORCH_HOME/config.json")
+      notif_id=$(jq -r '.discord.notifications_channel_id // empty' "$ORCH_HOME/config.json")
+      tasks_id=$(jq -r '.discord.tasks_channel_id // empty' "$ORCH_HOME/config.json")
+
+      if [ -n "$guild_id" ] && [ -n "$notif_id" ]; then
+        claude mcp add-json -s user orchestrator-companion "{
+          \"command\": \"npx\",
+          \"args\": [\"--prefix\", \"$ORCH_HOME/channel\", \"tsx\", \"$ORCH_HOME/channel/src/server.ts\"],
+          \"env\": {
+            \"DISCORD_BOT_TOKEN\": \"$bot_token\",
+            \"GUILD_ID\": \"$guild_id\",
+            \"NOTIFICATIONS_CHANNEL_ID\": \"$notif_id\",
+            \"TASKS_CHANNEL_ID\": \"$tasks_id\",
+            \"ORCH_PORT\": \"9111\",
+            \"ORCH_HOME\": \"$ORCH_HOME\"
+          }
+        }" 2>/dev/null
+        echo "  ✓ Companion server registered"
+      else
+        echo "  ✗ Missing Discord channel IDs. Complete step 5 first."
+      fi
+    else
+      echo "  ✗ Missing bot token or config. Complete steps 4-5 first."
+    fi
+  fi
+  echo ""
+
+  # Summary
+  echo "╔══════════════════════════════════════════════════════════╗"
+  echo "║           SETUP COMPLETE                                 ║"
+  echo "╚══════════════════════════════════════════════════════════╝"
+  echo ""
+  echo "  Start the orchestrator:"
+  echo "    orch start"
+  echo ""
+  echo "  Open the dashboard:"
+  echo "    http://localhost:9111"
+  echo ""
+  echo "  Message your bot on Discord to control workers."
+  echo ""
+}
+
+# =============================================================================
 # Main dispatch
 # =============================================================================
 
@@ -1582,6 +1818,7 @@ case "${1:-help}" in
   remodel) shift; cmd_remodel "$@" ;;
   start)   shift; cmd_start "$@" ;;
   stop)    shift; cmd_stop "$@" ;;
+  setup)   shift; cmd_setup "$@" ;;
   spawn-deferred) shift; cmd_spawn_deferred "$@" ;;
   project) shift; cmd_project "$@" ;;
   memory)  shift; cmd_memory "$@" ;;
