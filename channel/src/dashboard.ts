@@ -258,7 +258,32 @@ tr.stale { background: rgba(234,179,8,.05); }
 .notif-time { font-family: 'JetBrains Mono', monospace; font-size: .6rem; color: var(--text-2); white-space: nowrap; }
 .notif-text { flex: 1; }
 
-@media (max-width: 900px) { .stats{grid-template-columns:repeat(3,1fr)} .grid-2,.grid-3{grid-template-columns:1fr} .wrap{padding:1rem} }
+/* Command Palette */
+.cmd-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 100; backdrop-filter: blur(4px); justify-content: center; align-items: flex-start; padding-top: 15vh; }
+.cmd-overlay.active { display: flex; }
+.cmd-modal { background: var(--bg-1); border: 1px solid var(--border); border-radius: 12px; width: 560px; max-width: 90vw; box-shadow: 0 20px 60px rgba(0,0,0,.4); }
+.cmd-header { display: flex; align-items: center; gap: .5rem; padding: .75rem 1rem; border-bottom: 1px solid var(--border); }
+.cmd-icon { color: var(--accent); font-family: 'JetBrains Mono', monospace; font-weight: 700; }
+.cmd-input { flex: 1; background: none; border: none; color: var(--text-0); font-family: 'JetBrains Mono', monospace; font-size: .85rem; outline: none; }
+.cmd-input::placeholder { color: var(--text-2); }
+.cmd-output { max-height: 300px; overflow-y: auto; padding: .75rem 1rem; font-family: 'JetBrains Mono', monospace; font-size: .75rem; color: var(--text-1); white-space: pre-wrap; word-break: break-all; line-height: 1.5; }
+.cmd-output:empty { display: none; }
+.cmd-footer { display: flex; justify-content: space-between; padding: .5rem 1rem; border-top: 1px solid var(--border); font-size: .65rem; }
+
+/* Memory Modal */
+.mem-modal { width: 640px; }
+.mem-header { padding: .75rem 1rem; font-weight: 600; font-size: .85rem; border-bottom: 1px solid var(--border); color: var(--accent-l); }
+.mem-content { padding: 1rem; font-family: 'JetBrains Mono', monospace; font-size: .75rem; color: var(--text-1); white-space: pre-wrap; word-break: break-all; line-height: 1.6; max-height: 400px; overflow-y: auto; margin: 0; background: none; }
+
+/* Dependency Graph */
+#dep-sec { display: none; }
+#dep-canvas { width: 100%; border-radius: 10px; background: var(--bg-1); border: 1px solid var(--border); }
+
+/* Memory clickable rows */
+.mem-row { cursor: pointer; }
+.mem-row:hover { background: var(--bg-3); }
+
+@media (max-width: 900px) { .stats{grid-template-columns:repeat(3,1fr)} .grid-2,.grid-3{grid-template-columns:1fr} .wrap{padding:1rem} .cmd-modal,.mem-modal{width:95vw} }
 </style>
 </head>
 <body>
@@ -278,6 +303,11 @@ tr.stale { background: rgba(234,179,8,.05); }
     <div class="stat"><div class="stat-v">${totalTools.toLocaleString()}</div><div class="stat-l">Tool Calls</div></div>
     <div class="stat"><div class="stat-v">${formatTokens(totalEst.tokens)}</div><div class="stat-l">Est. Tokens</div></div>
     <div class="stat"><div class="stat-v"><span class="${costClass(totalEst.cost)}">${formatCost(totalEst.cost)}</span></div><div class="stat-l">Est. Cost</div></div>
+  </div>
+
+  <div class="sec" id="dep-sec">
+    <div class="sec-h"><div class="sec-t">Worker Dependencies</div></div>
+    <canvas id="dep-canvas" height="120"></canvas>
   </div>
 
   <div class="sec">
@@ -328,7 +358,7 @@ tr.stale { background: rgba(234,179,8,.05); }
       <div class="card">
         ${memories.length > 0 ? `<table>
           <tr><th>Cat</th><th>Title</th><th>Layer</th></tr>
-          ${memories.map(m => `<tr>
+          ${memories.map(m => `<tr class="mem-row" onclick="showMemory('${esc(m.layer)}','${esc(m.id)}')">
             <td>${catBadge(m.category)}</td>
             <td>${esc(m.title)}</td>
             <td><span class="dim">${esc(m.layer)}</span></td>
@@ -346,69 +376,167 @@ tr.stale { background: rgba(234,179,8,.05); }
   </div>
 </div>
 
+<!-- Command Palette Modal -->
+<div id="cmd-overlay" class="cmd-overlay" onclick="if(event.target===this)closePalette()">
+  <div class="cmd-modal">
+    <div class="cmd-header">
+      <span class="cmd-icon">></span>
+      <input id="cmd-input" class="cmd-input" type="text" placeholder="Type a command... (spawn, kill, send, list, status, remodel, memory)" autofocus>
+    </div>
+    <div id="cmd-output" class="cmd-output"></div>
+    <div class="cmd-footer">
+      <span class="dim">Enter to run</span>
+      <span class="dim">Esc to close</span>
+    </div>
+  </div>
+</div>
+
+<!-- Memory Detail Modal -->
+<div id="mem-overlay" class="cmd-overlay" onclick="if(event.target===this)closeMemory()">
+  <div class="cmd-modal mem-modal">
+    <div class="mem-header" id="mem-header">Memory</div>
+    <pre class="mem-content" id="mem-content">Loading...</pre>
+    <div class="cmd-footer"><span class="dim">Esc to close</span></div>
+  </div>
+</div>
+
 <script>
+// Theme
 function toggleTheme() {
   document.body.classList.toggle('light')
   localStorage.setItem('theme', document.body.classList.contains('light') ? 'light' : 'dark')
 }
 if (localStorage.getItem('theme') === 'light') document.body.classList.add('light')
 
+// Logs
 async function showLogs(name) {
   const panel = document.getElementById('logs-panel')
-  const title = document.getElementById('logs-title')
-  const content = document.getElementById('logs-content')
   panel.classList.add('active')
-  title.textContent = 'Logs: ' + name
-  content.textContent = 'Loading...'
+  document.getElementById('logs-title').textContent = 'Logs: ' + name
+  document.getElementById('logs-content').textContent = 'Loading...'
   try {
-    const res = await fetch('/api/logs/' + name)
-    const data = await res.json()
-    content.textContent = data.logs || '(empty)'
-  } catch (e) {
-    content.textContent = 'Error: ' + e.message
-  }
+    const data = await (await fetch('/api/logs/' + name)).json()
+    document.getElementById('logs-content').textContent = data.logs || '(empty)'
+  } catch (e) { document.getElementById('logs-content').textContent = 'Error: ' + e.message }
 }
 
+// Notifications
 async function loadNotifications() {
   try {
-    const res = await fetch('/api/notifications')
-    const data = await res.json()
+    const data = await (await fetch('/api/notifications')).json()
     const card = document.getElementById('notif-card')
-    if (data.length === 0) {
-      card.innerHTML = '<p class="empty">No notifications yet</p>'
-      return
-    }
+    if (!data.length) { card.innerHTML = '<p class="empty">No notifications yet</p>'; return }
     const emojis = { done: '\\u2705', update: '\\uD83D\\uDCCB', error: '\\u274C', blocked: '\\uD83D\\uDEAB' }
     card.innerHTML = data.slice(0, 15).map(n => {
       const time = new Date(n.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
-      const emoji = emojis[n.event] || '\\uD83D\\uDCCB'
-      return '<div class="notif-item"><span class="notif-time">' + time + '</span><span class="notif-text">' + emoji + ' <strong>' + n.worker + '</strong> ' + n.summary.slice(0, 100) + '</span></div>'
+      return '<div class="notif-item"><span class="notif-time">' + time + '</span><span class="notif-text">' + (emojis[n.event]||'\\uD83D\\uDCCB') + ' <strong>' + n.worker + '</strong> ' + n.summary.slice(0,100) + '</span></div>'
     }).join('')
   } catch {}
 }
 loadNotifications()
 
-// Refresh data every 10s
+// Command Palette
+function openPalette() { document.getElementById('cmd-overlay').classList.add('active'); document.getElementById('cmd-input').focus(); document.getElementById('cmd-input').value = '' }
+function closePalette() { document.getElementById('cmd-overlay').classList.remove('active') }
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); openPalette() }
+  if (e.key === 'Escape') { closePalette(); closeMemory() }
+})
+document.getElementById('cmd-input').addEventListener('keydown', async e => {
+  if (e.key !== 'Enter') return
+  const cmd = e.target.value.trim()
+  if (!cmd) return
+  const out = document.getElementById('cmd-output')
+  out.textContent = 'Running...'
+  try {
+    const data = await (await fetch('/api/command', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({command: cmd}) })).json()
+    out.textContent = data.output || (data.exitCode === 0 ? '(ok)' : '(error)')
+    // Save to history
+    const hist = JSON.parse(localStorage.getItem('cmd-history') || '[]')
+    hist.unshift(cmd); if (hist.length > 20) hist.pop()
+    localStorage.setItem('cmd-history', JSON.stringify(hist))
+  } catch (err) { out.textContent = 'Error: ' + err.message }
+})
+
+// Memory Browser
+async function showMemory(layer, id) {
+  document.getElementById('mem-overlay').classList.add('active')
+  document.getElementById('mem-header').textContent = layer + ':' + id
+  document.getElementById('mem-content').textContent = 'Loading...'
+  try {
+    const data = await (await fetch('/api/memory/' + layer + '/' + id)).json()
+    document.getElementById('mem-content').textContent = data.content || '(empty)'
+  } catch (e) { document.getElementById('mem-content').textContent = 'Error: ' + e.message }
+}
+function closeMemory() { document.getElementById('mem-overlay').classList.remove('active') }
+
+// Dependency Graph
+async function loadDepGraph() {
+  try {
+    const data = await (await fetch('/api/dependencies')).json()
+    if (!data.edges || data.edges.length === 0) { document.getElementById('dep-sec').style.display = 'none'; return }
+    document.getElementById('dep-sec').style.display = 'block'
+    const canvas = document.getElementById('dep-canvas')
+    const ctx = canvas.getContext('2d')
+    const W = canvas.width = canvas.parentElement.offsetWidth
+    const H = canvas.height = 120
+    ctx.clearRect(0, 0, W, H)
+
+    const colors = { running: '#22c55e', done: '#3b82f6', error: '#ef4444', killed: '#6b7280', waiting: '#eab308', starting: '#eab308' }
+    const nodes = data.nodes
+    const gap = W / (nodes.length + 1)
+    const positions = {}
+    nodes.forEach((n, i) => { positions[n.name] = { x: gap * (i + 1), y: H / 2 } })
+
+    // Draw edges
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 2
+    data.edges.forEach(e => {
+      const from = positions[e.from], to = positions[e.to]
+      if (!from || !to) return
+      ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke()
+      // Arrow
+      const angle = Math.atan2(to.y - from.y, to.x - from.x)
+      ctx.beginPath()
+      ctx.moveTo(to.x - 16 * Math.cos(angle - 0.3), to.y - 16 * Math.sin(angle - 0.3))
+      ctx.lineTo(to.x - 8 * Math.cos(angle), to.y - 8 * Math.sin(angle))
+      ctx.lineTo(to.x - 16 * Math.cos(angle + 0.3), to.y - 16 * Math.sin(angle + 0.3))
+      ctx.fillStyle = '#555'; ctx.fill()
+    })
+
+    // Draw nodes
+    nodes.forEach(n => {
+      const p = positions[n.name]
+      ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI * 2)
+      ctx.fillStyle = colors[n.status] || '#6b7280'; ctx.fill()
+      ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--text-0').trim() || '#eee'
+      ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'center'
+      ctx.fillText(n.name, p.x, p.y + 24)
+    })
+  } catch {}
+}
+loadDepGraph()
+
+// Auto-refresh
 setInterval(async () => {
   try {
     const res = await fetch(window.location.href)
     const html = await res.text()
     const parser = new DOMParser()
     const doc = parser.parseFromString(html, 'text/html')
-    // Preserve logs panel state
     const logsActive = document.getElementById('logs-panel')?.classList.contains('active')
     const logsContent = document.getElementById('logs-content')?.textContent
     const logsTitle = document.getElementById('logs-title')?.textContent
-    // Update main content
     document.querySelector('.stats').innerHTML = doc.querySelector('.stats').innerHTML
-    document.querySelectorAll('.sec .card')[0].innerHTML = doc.querySelectorAll('.sec .card')[0].innerHTML
-    // Restore logs if open
+    const cards = document.querySelectorAll('.sec .card')
+    const newCards = doc.querySelectorAll('.sec .card')
+    if (cards[0] && newCards[0]) cards[0].innerHTML = newCards[0].innerHTML
     if (logsActive) {
       document.getElementById('logs-panel').classList.add('active')
       document.getElementById('logs-content').textContent = logsContent
       document.getElementById('logs-title').textContent = logsTitle
     }
     loadNotifications()
+    loadDepGraph()
   } catch {}
 }, 10000)
 </script>
