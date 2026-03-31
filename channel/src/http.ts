@@ -1,5 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http'
-import { readFileSync } from 'fs'
+import { readFileSync, readdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -88,6 +88,80 @@ export function startHttpListener(port: number, mcp: Server, state: ChannelState
         res.end(JSON.stringify(notificationHistory))
         return
       }
+    }
+
+    // POST /api/command — execute an orch command
+    if (req.method === 'POST' && req.url === '/api/command') {
+      try {
+        const body = await parseBody(req)
+        const { command } = JSON.parse(body) as { command: string }
+        if (!command) { res.writeHead(400); res.end('missing command'); return }
+        // Sanitize: only allow orch subcommands
+        const orchPath = join(process.env.ORCH_HOME || join(process.env.HOME || '', '.claude-orchestrator'), 'bin', 'orch')
+        let output = ''
+        let exitCode = 0
+        try {
+          output = execSync(`"${orchPath}" ${command}`, { timeout: 30000, encoding: 'utf-8' })
+        } catch (err: any) {
+          output = err.stdout?.toString() || err.stderr?.toString() || err.message
+          exitCode = err.status || 1
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ output, exitCode }))
+      } catch (err) {
+        res.writeHead(500)
+        res.end(JSON.stringify({ output: String(err), exitCode: 1 }))
+      }
+      return
+    }
+
+    // GET /api/memory/:layer/:id — full memory file content
+    if (req.method === 'GET' && req.url?.startsWith('/api/memory/')) {
+      const parts = req.url.replace('/api/memory/', '').split('/')
+      const layer = parts[0]
+      const id = parts[1]
+      if (!layer || !id) { res.writeHead(400); res.end('missing layer/id'); return }
+      const orchHome = process.env.ORCH_HOME || join(process.env.HOME || '', '.claude-orchestrator')
+      let filePath = ''
+      if (layer === 'user') filePath = join(orchHome, 'memory', 'user', `${id}.md`)
+      else if (layer === 'patterns') filePath = join(orchHome, 'memory', 'patterns', `${id}.md`)
+      else filePath = join(orchHome, 'projects', layer, 'memory', `${id}.md`)
+      try {
+        const content = readFileSync(filePath, 'utf-8')
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ id, layer, content, path: filePath }))
+      } catch {
+        res.writeHead(404)
+        res.end(JSON.stringify({ error: 'memory not found' }))
+      }
+      return
+    }
+
+    // GET /api/dependencies — worker dependency graph
+    if (req.method === 'GET' && req.url === '/api/dependencies') {
+      const orchHome = process.env.ORCH_HOME || join(process.env.HOME || '', '.claude-orchestrator')
+      const workersDir = join(orchHome, 'workers')
+      const nodes: Array<{ name: string; status: string; project: string | null }> = []
+      const edges: Array<{ from: string; to: string }> = []
+      try {
+        for (const name of readdirSync(workersDir)) {
+          const statusFile = join(workersDir, name, 'status')
+          const metaFile = join(workersDir, name, 'meta.json')
+          if (!existsSync(statusFile)) continue
+          const status = readFileSync(statusFile, 'utf-8').trim()
+          let project: string | null = null, dependsOn: string | null = null
+          try {
+            const meta = JSON.parse(readFileSync(metaFile, 'utf-8'))
+            project = meta.project || null
+            dependsOn = meta.depends_on || null
+          } catch {}
+          nodes.push({ name, status, project })
+          if (dependsOn) edges.push({ from: dependsOn, to: name })
+        }
+      } catch {}
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ nodes, edges }))
+      return
     }
 
     // POST /memory — worker signals a memory was created/updated
