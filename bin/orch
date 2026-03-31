@@ -171,6 +171,7 @@ Worker commands:
     --template <name>                     System prompt template (default: "default")
     --model <model>                       Model override
     --after <worker>                      Wait for worker to finish before starting
+    --plan                                Start worker in plan mode
     --no-permissions-skip                 Require permission approvals
 
   send <name> <message>                   Send a directive to a worker
@@ -209,7 +210,7 @@ cmd_spawn() {
 
   # Parse arguments
   local name="" dir="" prompt=""
-  local ssh_host="" project="" template="default" model="" no_perms_skip=false after=""
+  local ssh_host="" project="" template="default" model="" no_perms_skip=false after="" plan_mode=false
   local positional=()
 
   while [ $# -gt 0 ]; do
@@ -219,6 +220,7 @@ cmd_spawn() {
       --template)   template="$2"; shift 2 ;;
       --model)      model="$2"; shift 2 ;;
       --after)      after="$2"; shift 2 ;;
+      --plan)       plan_mode=true; shift ;;
       --no-permissions-skip) no_perms_skip=true; shift ;;
       -*)           die "Unknown option: $1" ;;
       *)            positional+=("$1"); shift ;;
@@ -413,7 +415,9 @@ SETEOF
   claude_cmd+=" --settings '${worker_dir}/settings.json'"
   claude_cmd+=" --model '${model}'"
   claude_cmd+=" --add-dir '${ORCH_HOME}/workers/${name}'"
-  if [ "$perms_skip" = "true" ]; then
+  if [ "$plan_mode" = true ]; then
+    claude_cmd+=" --permission-mode plan"
+  elif [ "$perms_skip" = "true" ]; then
     claude_cmd+=" --dangerously-skip-permissions"
   fi
 
