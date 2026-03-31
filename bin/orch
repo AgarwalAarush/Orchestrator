@@ -179,6 +179,7 @@ Worker commands:
   logs <name> [--tail N]                  Show worker terminal output
   kill <name>                             Gracefully stop a worker
   attach <name>                           Attach to a worker's tmux session
+  remodel <name> <model>                 Switch a worker to a different model
   cleanup                                 Remove finished workers older than 24h
   start                                   Start the orchestrator (tmux + Discord)
   stop                                    Stop the orchestrator
@@ -1454,6 +1455,52 @@ cmd_spawn_deferred() {
   fi
 }
 
+cmd_remodel() {
+  [ $# -ge 2 ] || die "Usage: orch remodel <name> <model>"
+  local name="$1"
+  local new_model="$2"
+
+  require_worker "$name"
+  require_tmux
+  require_claude
+
+  local worker_dir="$WORKERS_DIR/$name"
+  local meta_file="$worker_dir/meta.json"
+  [ -f "$meta_file" ] || die "No meta.json for worker '$name'"
+
+  if ! command -v jq &>/dev/null; then
+    die "jq is required for remodel"
+  fi
+
+  local old_model dir prompt project template ssh_host
+  old_model=$(jq -r '.model // "sonnet"' "$meta_file")
+  dir=$(jq -r '.dir // empty' "$meta_file")
+  prompt=$(jq -r '.prompt // empty' "$meta_file")
+  project=$(jq -r '.project // empty' "$meta_file")
+  template=$(jq -r '.template // "default"' "$meta_file")
+  ssh_host=$(jq -r '.ssh_host // empty' "$meta_file")
+
+  echo "Switching worker '$name' from $old_model to $new_model..."
+
+  # Kill with --rm (auto-promotes memories to project)
+  cmd_kill "$name" --rm
+
+  # Re-spawn with new model
+  local spawn_args="$name $dir"
+  spawn_args="$spawn_args $prompt"
+
+  local spawn_opts="--model $new_model --template $template"
+  [ -n "$project" ] && [ "$project" != "null" ] && spawn_opts="$spawn_opts --project $project"
+  [ -n "$ssh_host" ] && [ "$ssh_host" != "null" ] && spawn_opts="$spawn_opts --ssh $ssh_host"
+
+  cmd_spawn "$name" "$dir" "$prompt" --model "$new_model" --template "$template" \
+    $([ -n "$project" ] && [ "$project" != "null" ] && echo "--project $project") \
+    $([ -n "$ssh_host" ] && [ "$ssh_host" != "null" ] && echo "--ssh $ssh_host")
+
+  echo "Worker '$name' restarted with model $new_model (was $old_model)."
+  echo "Project memories were preserved."
+}
+
 cmd_attach() {
   [ $# -ge 1 ] || die "Usage: orch attach <name>"
   local name="$1"
@@ -1532,6 +1579,7 @@ case "${1:-help}" in
   kill)    shift; cmd_kill "$@" ;;
   cleanup) shift; cmd_cleanup "$@" ;;
   attach)  shift; cmd_attach "$@" ;;
+  remodel) shift; cmd_remodel "$@" ;;
   start)   shift; cmd_start "$@" ;;
   stop)    shift; cmd_stop "$@" ;;
   spawn-deferred) shift; cmd_spawn_deferred "$@" ;;
