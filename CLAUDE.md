@@ -26,6 +26,7 @@ When a Discord message arrives from a PROJECT CHANNEL (any channel that matches 
 
 ## Key Rules
 
+- **Always use a worker** for this project. All work on claude-orchestrator goes through a dedicated worker.
 - Main session NEVER does project work (SSH, code, SLURM, answering questions about code). Routes to workers.
 - Every project channel message goes to that project's dedicated worker. NO EXCEPTIONS.
 - Workers post responses via `curl POST localhost:9111/notify`.
@@ -46,7 +47,7 @@ Dashboard: `http://localhost:9111` (when orchestrator is running)
 ## CLI Commands
 
 ```
-orch spawn <n> <dir> <prompt> [--project p] [--template t] [--model m] [--after w]
+orch spawn <n> <dir> <prompt> [--project p] [--template t] [--model m] [--after w] [--worktree]
 orch send/status/list/logs/kill/attach/cleanup
 orch start/stop
 orch project create/update/link/archive/list
@@ -60,6 +61,25 @@ orch memory list/show/rebuild/promote/add/consolidate
 - TypeScript changes: `cd channel && npx tsc --noEmit` to type-check.
 - After changes: `bash install.sh` to copy to `~/.claude-orchestrator/`.
 - Restart `claude --channels` session to pick up instruction changes.
+
+## Dashboard UI Guidelines
+
+The web dashboard (`channel/src/dashboard.ts`) uses a brutalist dark UI with strict typographic rules:
+
+- **Font system**: `Space Grotesk` (headlines/labels), `Inter` (body), `Roboto Mono` (data/code)
+- **Font sizes must be consistent within each context:**
+  - Stat card labels: `font-headline text-[10px] tracking-widest uppercase`
+  - Table headers: `font-headline text-[10px] tracking-widest uppercase`
+  - Table body cells: `font-mono text-xs` (all cells in a row MUST use the same size)
+  - Section titles: `font-headline font-bold text-base uppercase`
+  - Sub-headers (e.g. "Project Registry"): `font-headline text-xs tracking-widest uppercase`
+  - Secondary/meta text: `text-[10px] font-mono`
+  - Footer: `font-mono text-[10px]`
+- **Vertical alignment**: All table row cells use `align-middle` and uniform `p-3` padding.
+- **Status badges**: `font-mono text-xs uppercase` with colored border/bg.
+- **Colors**: Green `#4DE082`, Blue `#4D8EFF`, Yellow `#EAB308`, Red `#FFB4AB`, Muted `#474747`, Text `#C6C6C6`, White `#E5E2E1`
+- **No border-radius** anywhere (brutalist aesthetic).
+- When adding new dashboard elements, match existing patterns exactly. Always use a worker for dashboard changes.
 
 ## File Locations
 

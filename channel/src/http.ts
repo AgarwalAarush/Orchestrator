@@ -10,6 +10,9 @@ import { renderDashboard, getWorkersJson, getProjectsJson } from './dashboard.js
 // Keep last 50 notifications in memory for the dashboard
 const notificationHistory: Array<{ worker: string; event: string; summary: string; timestamp: string }> = []
 
+// SSE clients waiting for live updates
+const sseClients = new Set<ServerResponse>()
+
 const SEVERITY_EMOJI: Record<string, string> = {
   done: '\u2705',
   update: '\uD83D\uDCCB',
@@ -86,6 +89,19 @@ export function startHttpListener(port: number, mcp: Server, state: ChannelState
       if (req.url === '/api/notifications') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(notificationHistory))
+        return
+      }
+      // SSE live event stream: GET /api/events
+      if (req.url === '/api/events') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        })
+        res.write('data: {"type":"connected"}\n\n')
+        sseClients.add(res)
+        req.on('close', () => sseClients.delete(res))
         return
       }
     }

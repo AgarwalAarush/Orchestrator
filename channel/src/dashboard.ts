@@ -136,7 +136,7 @@ export function renderDashboard(): string {
   const statusBadge = (s: string) => {
     const colors: Record<string, string> = { running: '#4DE082', done: '#4D8EFF', error: '#FFB4AB', killed: '#474747', waiting: '#EAB308', starting: '#EAB308' }
     const c = colors[s] || '#474747'
-    return `<span class="inline-flex items-center px-2 py-0.5 border border-[${c}] bg-[${c}]/5 text-[${c}] font-mono text-[10px] uppercase">${esc(s)}</span>`
+    return `<span class="inline-flex items-center px-2 py-0.5 border border-[${c}] bg-[${c}]/5 text-[${c}] font-mono text-xs uppercase">${esc(s)}</span>`
   }
 
   const memCategoryColor: Record<string, string> = {
@@ -145,7 +145,8 @@ export function renderDashboard(): string {
   }
 
   return `<!DOCTYPE html>
-<html class="dark" lang="en"><head>
+<html lang="en"><head>
+<script>document.documentElement.className=localStorage.getItem('orch-theme')==='light'?'light':'dark'<\/script>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
 <title>ORCHESTRATOR</title>
@@ -162,28 +163,71 @@ tailwind.config = {
 }
 <\/script>
 <style>
+:root {
+  --bg-page: #0A0A0A; --bg-sidebar: #0E0E0E; --bg-card: #131313;
+  --bg-input: #0E0E0E; --bg-table-head: #1C1B1B; --border: #1C1B1B;
+  --text-primary: #E5E2E1; --text-secondary: #C6C6C6; --text-muted: #474747; --text-white: #FFFFFF;
+  --scrollbar-track: #0E0E0E; --scrollbar-thumb: #474747;
+  --overlay-bg: rgba(0,0,0,.7); --hover-bg: #1C1B1B; --hover-mem: #222;
+  --accent-green: #4DE082; --accent-blue: #4D8EFF; --accent-yellow: #EAB308; --accent-red: #FFB4AB;
+}
+html.light {
+  --bg-page: #F5F5F5; --bg-sidebar: #FFFFFF; --bg-card: #FFFFFF;
+  --bg-input: #F0F0F0; --bg-table-head: #F0F0F0; --border: #E0E0E0;
+  --text-primary: #1A1A1A; --text-secondary: #4A4A4A; --text-muted: #9CA3AF; --text-white: #111111;
+  --scrollbar-track: #F0F0F0; --scrollbar-thumb: #C0C0C0;
+  --overlay-bg: rgba(0,0,0,.3); --hover-bg: #F0F0F0; --hover-mem: #F0F0F0;
+  --accent-green: #16A34A; --accent-blue: #2563EB; --accent-yellow: #CA8A04; --accent-red: #DC2626;
+}
 .material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24; }
-body { background-color: #0A0A0A; color: #E5E2E1; font-family: 'Inter', sans-serif; }
+body { background-color: var(--bg-page); color: var(--text-primary); font-family: 'Inter', sans-serif; }
 ::-webkit-scrollbar { width: 4px; }
-::-webkit-scrollbar-track { background: #0E0E0E; }
-::-webkit-scrollbar-thumb { background: #474747; }
+::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); }
 /* Command Palette */
-.cmd-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 200; backdrop-filter: blur(4px); justify-content: center; align-items: flex-start; padding-top: 15vh; }
+.cmd-overlay { display: none; position: fixed; inset: 0; background: var(--overlay-bg); z-index: 200; backdrop-filter: blur(4px); justify-content: center; align-items: flex-start; padding-top: 15vh; }
 .cmd-overlay.active { display: flex; }
-.cmd-modal { background: #131313; border: 1px solid #1C1B1B; width: 560px; max-width: 90vw; }
-.cmd-input { width: 100%; background: #0E0E0E; border: none; border-bottom: 1px solid #1C1B1B; padding: 14px 16px; color: #E5E2E1; font-family: 'Roboto Mono', monospace; font-size: 13px; outline: none; }
-.cmd-input::placeholder { color: #474747; }
-.cmd-output { max-height: 300px; overflow-y: auto; padding: 12px 16px; font-family: 'Roboto Mono', monospace; font-size: 11px; color: #C6C6C6; white-space: pre-wrap; word-break: break-all; }
+.cmd-modal { background: var(--bg-card); border: 1px solid var(--border); width: 560px; max-width: 90vw; }
+.cmd-input { width: 100%; background: var(--bg-input); border: none; border-bottom: 1px solid var(--border); padding: 14px 16px; color: var(--text-primary); font-family: 'Roboto Mono', monospace; font-size: 13px; outline: none; }
+.cmd-input::placeholder { color: var(--text-muted); }
+.cmd-output { max-height: 300px; overflow-y: auto; padding: 12px 16px; font-family: 'Roboto Mono', monospace; font-size: 11px; color: var(--text-secondary); white-space: pre-wrap; word-break: break-all; }
 .cmd-output:empty { display: none; }
-.cmd-footer { display: flex; justify-content: space-between; padding: 8px 16px; border-top: 1px solid #1C1B1B; font-family: 'Roboto Mono', monospace; font-size: 9px; color: #474747; text-transform: uppercase; letter-spacing: 0.05em; }
+.cmd-footer { display: flex; justify-content: space-between; padding: 8px 16px; border-top: 1px solid var(--border); font-family: 'Roboto Mono', monospace; font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
 /* Memory Modal */
 .mem-modal { width: 640px; max-width: 90vw; }
-.mem-header { padding: 12px 16px; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 12px; border-bottom: 1px solid #1C1B1B; color: #4DE082; text-transform: uppercase; letter-spacing: 0.05em; }
-.mem-content { padding: 16px; font-family: 'Roboto Mono', monospace; font-size: 11px; color: #C6C6C6; white-space: pre-wrap; word-break: break-all; line-height: 1.6; max-height: 400px; overflow-y: auto; margin: 0; background: none; }
+.mem-header { padding: 12px 16px; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 12px; border-bottom: 1px solid var(--border); color: var(--accent-green); text-transform: uppercase; letter-spacing: 0.05em; }
+.mem-content { padding: 16px; font-family: 'Roboto Mono', monospace; font-size: 11px; color: var(--text-secondary); white-space: pre-wrap; word-break: break-all; line-height: 1.6; max-height: 400px; overflow-y: auto; margin: 0; background: none; }
 /* Logs */
-.logs-panel { display: none; border: 1px solid #1C1B1B; background: #131313; margin-top: 8px; }
-.logs-panel.active { display: block; }
-.logs-pre { background: #0E0E0E; padding: 12px; font-family: 'Roboto Mono', monospace; font-size: 11px; color: #C6C6C6; overflow-x: auto; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; line-height: 1.5; margin: 0; }
+.logs-pre { background: var(--bg-input); padding: 12px; font-family: 'Roboto Mono', monospace; font-size: 11px; color: var(--text-secondary); overflow-x: auto; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; line-height: 1.5; margin: 0; }
+/* Light mode overrides for Tailwind arbitrary-value classes */
+html.light .text-white { color: var(--text-white) !important; }
+html.light .text-\\[\\#C6C6C6\\] { color: var(--text-secondary) !important; }
+html.light .text-\\[\\#474747\\] { color: var(--text-muted) !important; }
+html.light .text-\\[\\#E5E2E1\\] { color: var(--text-primary) !important; }
+html.light .bg-\\[\\#0A0A0A\\] { background-color: var(--bg-page) !important; }
+html.light .bg-\\[\\#0E0E0E\\] { background-color: var(--bg-sidebar) !important; }
+html.light .bg-\\[\\#131313\\] { background-color: var(--bg-card) !important; }
+html.light .bg-\\[\\#1C1B1B\\] { background-color: var(--bg-table-head) !important; }
+html.light .border-\\[\\#1C1B1B\\] { border-color: var(--border) !important; }
+html.light .border-\\[\\#0A0A0A\\] { border-color: var(--bg-page) !important; }
+html.light .divide-\\[\\#1C1B1B\\] > :not([hidden]) ~ :not([hidden]) { border-color: var(--border) !important; }
+html.light .divide-\\[\\#1C1B1B\\]\\/50 > :not([hidden]) ~ :not([hidden]) { border-color: var(--border) !important; }
+html.light .text-\\[\\#4DE082\\] { color: var(--accent-green) !important; }
+html.light .bg-\\[\\#4DE082\\] { background-color: var(--accent-green) !important; }
+html.light .border-\\[\\#4DE082\\] { border-color: var(--accent-green) !important; }
+html.light .text-\\[\\#4D8EFF\\] { color: var(--accent-blue) !important; }
+html.light .border-\\[\\#4D8EFF\\] { border-color: var(--accent-blue) !important; }
+html.light .text-\\[\\#EAB308\\] { color: var(--accent-yellow) !important; }
+html.light .border-\\[\\#EAB308\\] { border-color: var(--accent-yellow) !important; }
+html.light .text-\\[\\#FFB4AB\\] { color: var(--accent-red) !important; }
+html.light .border-\\[\\#FFB4AB\\] { border-color: var(--accent-red) !important; }
+html.light .hover\\:bg-\\[\\#1C1B1B\\]:hover { background-color: var(--hover-bg) !important; }
+html.light .hover\\:text-white:hover { color: var(--text-white) !important; }
+html.light .hover\\:bg-\\[\\#222\\]:hover { background-color: var(--hover-mem) !important; }
+html.light .hover\\:bg-\\[\\#1C1B1B\\]\\/40:hover { background-color: var(--hover-bg) !important; }
+/* Theme toggle */
+.theme-toggle { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-secondary); cursor: pointer; }
+.theme-toggle:hover { color: var(--text-white); }
 </style>
 </head>
 <body class="flex min-h-screen overflow-hidden">
@@ -223,8 +267,11 @@ body { background-color: #0A0A0A; color: #E5E2E1; font-family: 'Inter', sans-ser
     <div class="flex items-center gap-4">
       <div class="flex items-center gap-2 px-2.5 py-1 border border-[#4DE082] bg-[#4DE082]/10">
         <div class="w-1.5 h-1.5 bg-[#4DE082] animate-pulse"></div>
-        <span class="font-headline text-[9px] tracking-widest text-[#4DE082] uppercase">Online</span>
+        <span class="font-headline text-[10px] tracking-widest text-[#4DE082] uppercase">Online</span>
       </div>
+      <button class="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode" id="theme-btn">
+        <span class="material-symbols-outlined text-lg" id="theme-icon">light_mode</span>
+      </button>
       <span class="material-symbols-outlined text-[#C6C6C6] cursor-pointer hover:text-white text-lg" onclick="openPalette()">terminal</span>
     </div>
   </header>
@@ -233,7 +280,7 @@ body { background-color: #0A0A0A; color: #E5E2E1; font-family: 'Inter', sans-ser
     <!-- Stats -->
     <div class="grid grid-cols-2 md:grid-cols-6 gap-0 border border-[#1C1B1B]">
       <div class="bg-[#131313] p-5 border-r border-[#1C1B1B] relative overflow-hidden">
-        <div class="text-[#C6C6C6] font-headline text-[9px] tracking-widest uppercase mb-3">Active Workers</div>
+        <div class="text-[#C6C6C6] font-headline text-[10px] tracking-widest uppercase mb-3">Active Workers</div>
         <div class="flex items-baseline gap-2">
           <span class="text-3xl font-headline font-bold text-white tracking-tighter">${active.length}</span>
           <span class="text-[#4DE082] font-mono text-[10px]">/ ${workers.length}</span>
@@ -241,68 +288,72 @@ body { background-color: #0A0A0A; color: #E5E2E1; font-family: 'Inter', sans-ser
         <div class="absolute bottom-0 left-0 w-full h-0.5 bg-[#4DE082]/20"><div class="h-full bg-[#4DE082]" style="width:${workers.length ? Math.round(active.length / workers.length * 100) : 0}%"></div></div>
       </div>
       <div class="bg-[#131313] p-5 border-r border-[#1C1B1B]">
-        <div class="text-[#C6C6C6] font-headline text-[9px] tracking-widest uppercase mb-3">Projects</div>
+        <div class="text-[#C6C6C6] font-headline text-[10px] tracking-widest uppercase mb-3">Projects</div>
         <div class="text-3xl font-headline font-bold text-white tracking-tighter">${projects.length}</div>
       </div>
       <div class="bg-[#131313] p-5 border-r border-[#1C1B1B]">
-        <div class="text-[#C6C6C6] font-headline text-[9px] tracking-widest uppercase mb-3">Memories</div>
+        <div class="text-[#C6C6C6] font-headline text-[10px] tracking-widest uppercase mb-3">Memories</div>
         <div class="text-3xl font-headline font-bold text-white tracking-tighter">${memories.length}</div>
       </div>
       <div class="bg-[#131313] p-5 border-r border-[#1C1B1B]">
-        <div class="text-[#C6C6C6] font-headline text-[9px] tracking-widest uppercase mb-3">Tool Calls</div>
+        <div class="text-[#C6C6C6] font-headline text-[10px] tracking-widest uppercase mb-3">Tool Calls</div>
         <div class="text-3xl font-headline font-bold text-white tracking-tighter">${totalTools.toLocaleString()}</div>
       </div>
       <div class="bg-[#131313] p-5 border-r border-[#1C1B1B]">
-        <div class="text-[#C6C6C6] font-headline text-[9px] tracking-widest uppercase mb-3">Est. Tokens</div>
+        <div class="text-[#C6C6C6] font-headline text-[10px] tracking-widest uppercase mb-3">Est. Tokens</div>
         <div class="text-3xl font-headline font-bold text-white tracking-tighter">${fmtTokens(totalEst.tokens)}</div>
       </div>
       <div class="bg-[#131313] p-5">
-        <div class="text-[#C6C6C6] font-headline text-[9px] tracking-widest uppercase mb-3">Est. Cost</div>
+        <div class="text-[#C6C6C6] font-headline text-[10px] tracking-widest uppercase mb-3">Est. Cost</div>
         <div class="text-3xl font-headline font-bold ${totalEst.cost < 1 ? 'text-[#4DE082]' : totalEst.cost < 5 ? 'text-[#EAB308]' : 'text-[#FFB4AB]'} tracking-tighter">${fmtCost(totalEst.cost)}</div>
       </div>
     </div>
 
     <!-- Main Grid -->
-    <div class="grid grid-cols-12 gap-6">
+    <div class="grid grid-cols-12 gap-x-6 gap-y-4">
       <!-- Workers -->
-      <div class="col-span-12 lg:col-span-8 space-y-3">
+      <div class="col-span-12 lg:col-span-8 space-y-2">
         <div class="flex items-center justify-between">
           <h2 class="font-headline font-bold text-base text-white tracking-tight uppercase">Workers</h2>
         </div>
         <div class="border border-[#1C1B1B] bg-[#131313]">
           ${workers.length > 0 ? `<table class="w-full text-left border-collapse">
             <thead><tr class="bg-[#1C1B1B]">
-              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Worker</th>
-              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Status</th>
-              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Model</th>
-              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Project</th>
-              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Heartbeat</th>
-              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Cost</th>
-              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase text-right">Action</th>
+              <th class="p-3 font-headline text-[10px] tracking-widest text-[#C6C6C6] uppercase">Worker</th>
+              <th class="p-3 font-headline text-[10px] tracking-widest text-[#C6C6C6] uppercase">Status</th>
+              <th class="p-3 font-headline text-[10px] tracking-widest text-[#C6C6C6] uppercase">Model</th>
+              <th class="p-3 font-headline text-[10px] tracking-widest text-[#C6C6C6] uppercase">Project</th>
+              <th class="p-3 font-headline text-[10px] tracking-widest text-[#C6C6C6] uppercase">Heartbeat</th>
+              <th class="p-3 font-headline text-[10px] tracking-widest text-[#C6C6C6] uppercase">Cost</th>
+              <th class="p-3 font-headline text-[10px] tracking-widest text-[#C6C6C6] uppercase text-right">Action</th>
             </tr></thead>
             <tbody class="divide-y divide-[#1C1B1B]/50">
               ${workers.map(w => {
                 const est = estimateCost(w.toolCount, w.model)
                 const stale = w.status === 'running' && w.heartbeatAge > 600
-                return `<tr class="${stale ? 'bg-[#EAB308]/5' : ''}">
-                  <td class="p-3"><div class="font-mono text-sm text-white">${esc(w.name)}</div>${w.task ? `<div class="text-[10px] text-[#474747] font-mono mt-0.5 truncate max-w-[240px]">${esc(w.task)}</div>` : ''}</td>
-                  <td class="p-3">${statusBadge(w.status)}${!w.tmuxAlive && w.status === 'running' ? ' <span class="inline-flex items-center px-1.5 py-0.5 border border-[#FFB4AB] bg-[#FFB4AB]/5 text-[#FFB4AB] font-mono text-[9px] uppercase ml-1">DEAD</span>' : ''}</td>
+                return `<tr class="${stale ? 'bg-[#EAB308]/5' : ''} align-middle">
+                  <td class="p-3"><div class="font-mono text-xs text-white">${esc(w.name)}</div>${w.task ? `<div class="text-[10px] text-[#474747] font-mono mt-0.5 truncate max-w-[240px]">${esc(w.task)}</div>` : ''}</td>
+                  <td class="p-3 font-mono text-xs">${statusBadge(w.status)}${!w.tmuxAlive && w.status === 'running' ? ' <span class="inline-flex items-center px-1.5 py-0.5 border border-[#FFB4AB] bg-[#FFB4AB]/5 text-[#FFB4AB] font-mono text-[10px] uppercase ml-1">DEAD</span>' : ''}</td>
                   <td class="p-3 font-mono text-xs text-[#C6C6C6]">${esc(w.model)}</td>
                   <td class="p-3 font-mono text-xs ${w.project ? 'text-[#C6C6C6]' : 'text-[#474747]'}">${w.project ? esc(w.project) : '-'}</td>
-                  <td class="p-3 font-mono text-[10px] ${stale ? 'text-[#EAB308]' : 'text-[#C6C6C6]'}">${esc(w.heartbeat)}</td>
-                  <td class="p-3 font-mono text-[10px] ${est.cost < 1 ? 'text-[#4DE082]' : est.cost < 5 ? 'text-[#EAB308]' : 'text-[#FFB4AB]'}">${fmtCost(est.cost)}</td>
-                  <td class="p-3 text-right">${w.tmuxAlive ? `<button onclick="showLogs('${esc(w.name)}')" class="text-[#4DE082] font-headline text-[10px] font-bold tracking-widest hover:underline">VIEW_LOGS</button>` : '<span class="text-[#474747] font-headline text-[10px]">OFFLINE</span>'}</td>
+                  <td class="p-3 font-mono text-xs ${stale ? 'text-[#EAB308]' : 'text-[#C6C6C6]'}">${esc(w.heartbeat)}</td>
+                  <td class="p-3 font-mono text-xs ${est.cost < 1 ? 'text-[#4DE082]' : est.cost < 5 ? 'text-[#EAB308]' : 'text-[#FFB4AB]'}">${fmtCost(est.cost)}</td>
+                  <td class="p-3 text-right"><span class="font-mono text-xs">${w.tmuxAlive ? `<button onclick="toggleLogs('${esc(w.name)}')" class="text-[#4DE082] font-mono text-xs uppercase tracking-wide hover:underline">VIEW LOGS</button>` : '<span class="text-[#474747] uppercase">OFFLINE</span>'}</span></td>
+                </tr>
+                <tr id="logs-row-${esc(w.name)}" class="hidden">
+                  <td colspan="7" class="p-0">
+                    <div class="border-t border-[#1C1B1B]">
+                      <div class="flex items-center justify-between px-4 py-2 bg-[#1C1B1B]">
+                        <span class="font-headline text-[10px] tracking-widest text-[#C6C6C6] uppercase">LOGS: ${esc(w.name).toUpperCase()}</span>
+                        <button onclick="toggleLogs('${esc(w.name)}')" class="text-[#474747] hover:text-white material-symbols-outlined text-sm">close</button>
+                      </div>
+                      <pre class="logs-pre" id="logs-content-${esc(w.name)}">Loading...</pre>
+                    </div>
+                  </td>
                 </tr>`
               }).join('')}
             </tbody>
           </table>` : '<div class="p-8 text-center text-[#474747] font-mono text-xs uppercase">No workers spawned</div>'}
-        </div>
-        <div id="logs-panel" class="logs-panel">
-          <div class="flex items-center justify-between px-4 py-2 bg-[#1C1B1B]">
-            <span class="font-headline text-[10px] tracking-widest text-[#C6C6C6] uppercase" id="logs-title">Logs</span>
-            <button onclick="document.getElementById('logs-panel').classList.remove('active')" class="text-[#474747] hover:text-white material-symbols-outlined text-sm">close</button>
-          </div>
-          <pre class="logs-pre" id="logs-content">Loading...</pre>
         </div>
       </div>
 
@@ -310,11 +361,11 @@ body { background-color: #0A0A0A; color: #E5E2E1; font-family: 'Inter', sans-ser
       <div class="col-span-12 lg:col-span-4 space-y-3">
         <h2 class="font-headline font-bold text-base text-white tracking-tight uppercase">Projects</h2>
         <div class="border border-[#1C1B1B] bg-[#131313]">
-          <div class="bg-[#1C1B1B] px-4 py-2.5"><div class="font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Project Registry</div></div>
+          <div class="bg-[#1C1B1B] px-4 py-2.5"><div class="font-headline text-xs tracking-widest text-[#C6C6C6] uppercase">Project Registry</div></div>
           ${projects.length > 0 ? `<div class="divide-y divide-[#1C1B1B]">
             ${projects.map(p => `<div class="p-4 flex justify-between items-center hover:bg-[#1C1B1B]/40">
               <div>
-                <div class="font-mono text-sm ${p.status === 'active' ? 'text-[#4DE082]' : 'text-white'}">${esc(p.name)}</div>
+                <div class="font-mono text-xs ${p.status === 'active' ? 'text-[#4DE082]' : 'text-white'}">${esc(p.name)}</div>
                 <div class="text-[10px] text-[#474747] font-mono uppercase mt-0.5">Status: ${esc(p.status)}</div>
               </div>
               <div class="text-right">
@@ -335,8 +386,8 @@ body { background-color: #0A0A0A; color: #E5E2E1; font-family: 'Inter', sans-ser
             return `<div class="bg-[#1C1B1B] p-4 border-l-4 cursor-pointer hover:bg-[#222] flex flex-col justify-between min-h-[120px]" style="border-left-color:${c}" onclick="showMemory('${esc(m.layer)}','${esc(m.id)}')">
               <div>
                 <div class="flex items-center gap-2 mb-2">
-                  <span class="text-[9px] font-mono px-1.5 py-0.5 uppercase tracking-tighter" style="background:${c}15;color:${c}">${esc(m.category)}</span>
-                  <span class="text-[#474747] text-[9px] font-mono uppercase">Layer: ${esc(m.layer)}</span>
+                  <span class="text-[10px] font-mono px-1.5 py-0.5 uppercase tracking-tighter" style="background:${c}15;color:${c}">${esc(m.category)}</span>
+                  <span class="text-[#474747] text-[10px] font-mono uppercase">Layer: ${esc(m.layer)}</span>
                 </div>
                 <h3 class="text-white font-body text-sm leading-relaxed">${esc(m.title)}</h3>
               </div>
@@ -387,13 +438,37 @@ body { background-color: #0A0A0A; color: #E5E2E1; font-family: 'Inter', sans-ser
 </div>
 
 <script>
+// Theme
+function toggleTheme() {
+  const html = document.documentElement
+  const isLight = html.classList.contains('light')
+  html.className = isLight ? 'dark' : 'light'
+  localStorage.setItem('orch-theme', isLight ? 'dark' : 'light')
+  updateThemeIcon()
+}
+function updateThemeIcon() {
+  const icon = document.getElementById('theme-icon')
+  if (icon) icon.textContent = document.documentElement.classList.contains('light') ? 'dark_mode' : 'light_mode'
+}
+updateThemeIcon()
+
 // Logs
-async function showLogs(n) {
-  const p = document.getElementById('logs-panel'); p.classList.add('active')
-  document.getElementById('logs-title').textContent = 'LOGS: ' + n.toUpperCase()
-  document.getElementById('logs-content').textContent = 'Loading...'
-  try { const d = await (await fetch('/api/logs/'+n)).json(); document.getElementById('logs-content').textContent = d.logs||'(empty)' }
-  catch(e) { document.getElementById('logs-content').textContent = 'Error: '+e.message }
+async function toggleLogs(n) {
+  const row = document.getElementById('logs-row-'+n)
+  if (!row) return
+  if (row.classList.contains('hidden')) {
+    // Close all other open log rows first
+    document.querySelectorAll('[id^="logs-row-"]').forEach(r => r.classList.add('hidden'))
+    row.classList.remove('hidden')
+    const content = document.getElementById('logs-content-'+n)
+    if (content) {
+      content.textContent = 'Loading...'
+      try { const d = await (await fetch('/api/logs/'+n)).json(); content.textContent = d.logs||'(empty)' }
+      catch(e) { content.textContent = 'Error: '+e.message }
+    }
+  } else {
+    row.classList.add('hidden')
+  }
 }
 
 // Notifications
@@ -442,16 +517,27 @@ function closeMemory() { document.getElementById('mem-overlay').classList.remove
 // Auto-refresh
 setInterval(async () => {
   try {
+    // Remember which log rows are open
+    const openLogs = []
+    document.querySelectorAll('[id^="logs-row-"]').forEach(r => { if (!r.classList.contains('hidden')) openLogs.push(r.id.replace('logs-row-','')) })
+    const openContents = {}
+    openLogs.forEach(n => { const el = document.getElementById('logs-content-'+n); if (el) openContents[n] = el.textContent })
+
     const r = await fetch(window.location.href); const h = await r.text()
     const p = new DOMParser(); const d = p.parseFromString(h,'text/html')
-    const la = document.getElementById('logs-panel')?.classList.contains('active')
-    const lc = document.getElementById('logs-content')?.textContent
-    const lt = document.getElementById('logs-title')?.textContent
     const ss = d.querySelectorAll('.grid-cols-6 > div')
     const ts = document.querySelectorAll('.grid-cols-6 > div')
     ss.forEach((s,i) => { if(ts[i]) ts[i].innerHTML = s.innerHTML })
-    if (la) { document.getElementById('logs-panel').classList.add('active'); document.getElementById('logs-content').textContent=lc; document.getElementById('logs-title').textContent=lt }
+
+    // Restore open log rows
+    openLogs.forEach(n => {
+      const row = document.getElementById('logs-row-'+n)
+      if (row) { row.classList.remove('hidden') }
+      const content = document.getElementById('logs-content-'+n)
+      if (content && openContents[n]) { content.textContent = openContents[n] }
+    })
     loadNotifs()
+    updateThemeIcon()
   } catch {}
 }, 10000)
 <\/script>

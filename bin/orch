@@ -172,6 +172,7 @@ Worker commands:
     --model <model>                       Model override
     --after <worker>                      Wait for worker to finish before starting
     --plan                                Start worker in plan mode
+    --worktree                            Create isolated git worktree for worker
     --no-permissions-skip                 Require permission approvals
 
   send <name> <message>                   Send a directive to a worker
@@ -210,7 +211,7 @@ cmd_spawn() {
 
   # Parse arguments
   local name="" dir="" prompt=""
-  local ssh_host="" project="" template="default" model="" no_perms_skip=false after="" plan_mode=false
+  local ssh_host="" project="" template="default" model="" no_perms_skip=false after="" plan_mode=false use_worktree=false
   local positional=()
 
   while [ $# -gt 0 ]; do
@@ -221,6 +222,7 @@ cmd_spawn() {
       --model)      model="$2"; shift 2 ;;
       --after)      after="$2"; shift 2 ;;
       --plan)       plan_mode=true; shift ;;
+      --worktree)   use_worktree=true; shift ;;
       --no-permissions-skip) no_perms_skip=true; shift ;;
       -*)           die "Unknown option: $1" ;;
       *)            positional+=("$1"); shift ;;
@@ -241,6 +243,32 @@ cmd_spawn() {
 
   # Resolve and validate directory
   dir=$(cd "$dir" 2>/dev/null && pwd) || die "Directory '$dir' does not exist."
+
+  # Create git worktree if requested
+  local worktree_path=""
+  if [ "$use_worktree" = true ]; then
+    # Verify directory is a git repo
+    git -C "$dir" rev-parse --git-dir &>/dev/null || die "Directory '$dir' is not a git repository. Cannot create worktree."
+    local git_root
+    git_root=$(git -C "$dir" rev-parse --show-toplevel)
+    local worktrees_dir="$git_root/.worktrees"
+    worktree_path="$worktrees_dir/$name"
+    [ ! -d "$worktree_path" ] || die "Worktree '$worktree_path' already exists."
+    mkdir -p "$worktrees_dir"
+    # Add .worktrees to .gitignore if not already there
+    if [ -f "$git_root/.gitignore" ]; then
+      grep -qxF '.worktrees/' "$git_root/.gitignore" 2>/dev/null || echo '.worktrees/' >> "$git_root/.gitignore"
+    else
+      echo '.worktrees/' > "$git_root/.gitignore"
+    fi
+    # Create worktree from current HEAD on a new branch
+    local branch_name="worker/$name"
+    git -C "$git_root" worktree add "$worktree_path" -b "$branch_name" HEAD 2>/dev/null \
+      || git -C "$git_root" worktree add "$worktree_path" HEAD 2>/dev/null \
+      || die "Failed to create git worktree at '$worktree_path'."
+    dir="$worktree_path"
+    echo "Created git worktree at $worktree_path (branch: $branch_name)"
+  fi
 
   # Check max workers
   local max_workers
@@ -301,7 +329,8 @@ cmd_spawn() {
   "tmux_session": "${TMUX_PREFIX}${name}",
   "model": "$model",
   "template": "$template",
-  "depends_on": $([ -n "$after" ] && echo "\"$after\"" || echo "null")
+  "depends_on": $([ -n "$after" ] && echo "\"$after\"" || echo "null"),
+  "worktree_path": $([ -n "$worktree_path" ] && echo "\"$worktree_path\"" || echo "null")
 }
 METAEOF
 
@@ -733,6 +762,27 @@ cmd_kill() {
     fi
   fi
 
+  # Clean up git worktree if one was created
+  if command -v jq &>/dev/null && [ -f "$worker_dir/meta.json" ]; then
+    local wt_path
+    wt_path=$(jq -r '.worktree_path // empty' "$worker_dir/meta.json" 2>/dev/null)
+    if [ -n "$wt_path" ] && [ -d "$wt_path" ]; then
+      local git_root
+      git_root=$(git -C "$wt_path" rev-parse --show-toplevel 2>/dev/null || echo "")
+      # Find the main worktree to run worktree remove from
+      local main_root=""
+      if [ -n "$git_root" ]; then
+        main_root=$(git -C "$wt_path" worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //')
+      fi
+      if [ -n "$main_root" ]; then
+        git -C "$main_root" worktree remove "$wt_path" --force 2>/dev/null && echo "Removed git worktree at $wt_path" || echo "Warning: Could not remove worktree at $wt_path"
+      else
+        rm -rf "$wt_path"
+        echo "Removed worktree directory at $wt_path"
+      fi
+    fi
+  fi
+
   if [ "$remove" = true ]; then
     rm -rf "$worker_dir"
     echo "Worker '$name' removed."
@@ -774,6 +824,18 @@ cmd_cleanup() {
         if [ -n "$created_epoch" ]; then
           local age=$((now - created_epoch))
           if [ "$age" -gt 86400 ]; then
+            # Clean up worktree if present
+            local wt_path=""
+            wt_path=$(jq -r '.worktree_path // empty' "$worker_dir/meta.json" 2>/dev/null)
+            if [ -n "$wt_path" ] && [ -d "$wt_path" ]; then
+              local main_root
+              main_root=$(git -C "$wt_path" worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //')
+              if [ -n "$main_root" ]; then
+                git -C "$main_root" worktree remove "$wt_path" --force 2>/dev/null || rm -rf "$wt_path"
+              else
+                rm -rf "$wt_path"
+              fi
+            fi
             rm -rf "$worker_dir"
             echo "Cleaned up: $name (${status}, $(human_duration $age) old)"
             cleaned=$((cleaned + 1))
