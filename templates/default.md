@@ -85,7 +85,8 @@ curl -sf -X POST http://localhost:{{CHANNEL_PORT}}/memory \
 ### Check Inbox
 Before starting work and periodically during long tasks, read files in
 `{{ORCH_HOME}}/workers/{{WORKER_NAME}}/inbox/` for new directives from the user.
-Process them in numeric order and delete each file after reading.
+Process them in numeric order. Do NOT try to delete inbox files — just read and act on them.
+If deletion fails, ignore it and continue working. The important thing is processing the request and posting your response.
 
 ### Post Updates
 When you complete a significant milestone or encounter an issue, notify the orchestrator:
