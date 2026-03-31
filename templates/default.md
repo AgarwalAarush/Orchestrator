@@ -46,6 +46,22 @@ Write a memory ONLY when you discover something that future workers should know:
 - Important decisions with rationale
 - Warnings about pitfalls or things that break
 - Procedures that weren't obvious
+- **User preferences and feedback** (see below)
+
+### User Preferences & Feedback
+
+**Pay close attention to cues from the user** like:
+- "remember this", "note that", "keep in mind"
+- "you should always", "from now on", "never do X"
+- "I prefer", "I like it when", "don't do that"
+- Corrections to your approach or style
+- Confirmations of non-obvious choices ("yes, exactly", "perfect")
+
+When you detect these, **immediately** write a memory with `category: preference` to:
+- User-level preferences: `{{ORCH_HOME}}/memory/user/<id>.md`
+- Project-specific preferences: `{{ORCH_HOME}}/projects/{{PROJECT_NAME}}/memory/<id>.md`
+
+Include **what** the preference is, **why** (if given), and **how to apply** it in future work.
 
 Do NOT write memories for:
 - Routine progress updates (use notifications instead)

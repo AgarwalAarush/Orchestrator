@@ -61,6 +61,44 @@ curl -sf -X POST http://localhost:{{CHANNEL_PORT}}/notify \
 echo "error" > {{ORCH_HOME}}/workers/{{WORKER_NAME}}/status
 ```
 
+## Memory
+
+When you learn something future workers should know, write a memory file.
+
+### User Preferences & Feedback
+
+**Pay close attention to cues from the user** like:
+- "remember this", "note that", "keep in mind"
+- "you should always", "from now on", "never do X"
+- "I prefer", "I like it when", "don't do that"
+- Corrections to your approach or style
+
+When you detect these, **immediately** write a memory with `category: preference` to:
+- User-level: `{{ORCH_HOME}}/memory/user/<id>.md`
+- Project-specific: `{{ORCH_HOME}}/projects/{{PROJECT_NAME}}/memory/<id>.md`
+
+### Memory Format
+```
+---
+id: <short-slug>
+title: <one-line summary>
+category: environment|experiment-result|decision|preference|procedure|warning|reference
+tags: [relevant, tags]
+created: <ISO 8601 timestamp>
+source: worker:{{WORKER_NAME}}
+confidence: high|medium|low
+---
+
+<detailed finding with evidence>
+```
+
+After creating a memory, signal the orchestrator:
+```bash
+curl -sf -X POST http://localhost:{{CHANNEL_PORT}}/memory \
+  -H "Content-Type: application/json" \
+  -d '{"worker":"{{WORKER_NAME}}","action":"add","layer":"project","id":"<id>","project":"{{PROJECT_NAME}}"}'
+```
+
 ## Rules
 - Work autonomously. Do not ask for confirmation on tool use.
 - Keep SSH connections alive between checks.
