@@ -5,6 +5,7 @@ import { execSync } from 'child_process'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import * as discord from './discord-rest.js'
 import type { ChannelState } from './state.js'
+import { renderDashboard, getWorkersJson, getProjectsJson } from './dashboard.js'
 
 const SEVERITY_EMOJI: Record<string, string> = {
   done: '\u2705',
@@ -44,6 +45,25 @@ function loadConfig(): Record<string, any> {
  */
 export function startHttpListener(port: number, mcp: Server, state: ChannelState): void {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    // GET routes — dashboard and API
+    if (req.method === 'GET') {
+      if (req.url === '/' || req.url === '/dashboard') {
+        res.writeHead(200, { 'Content-Type': 'text/html' })
+        res.end(renderDashboard())
+        return
+      }
+      if (req.url === '/api/workers') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(getWorkersJson()))
+        return
+      }
+      if (req.url === '/api/projects') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(getProjectsJson()))
+        return
+      }
+    }
+
     // POST /memory — worker signals a memory was created/updated
     if (req.method === 'POST' && req.url === '/memory') {
       try {
@@ -88,11 +108,26 @@ export function startHttpListener(port: number, mcp: Server, state: ChannelState
         }
       }
 
-      // 2. Post in #notifications
+      // 2. Post in #notifications (use embeds for done/error/blocked, plain text for updates)
       const notifChannelId = process.env.NOTIFICATIONS_CHANNEL_ID || state.notificationsChannelId
       if (notifChannelId) {
         try {
-          await discord.sendMessage(notifChannelId, `${emoji} **[${data.worker}]** ${data.summary}`)
+          if (['done', 'error', 'blocked'].includes(data.event)) {
+            const EMBED_COLORS: Record<string, number> = {
+              done: 0x2ecc71,    // green
+              error: 0xe74c3c,   // red
+              blocked: 0xe67e22,  // orange
+            }
+            await discord.sendEmbed(notifChannelId, {
+              title: `${emoji} ${data.worker}`,
+              description: data.summary,
+              color: EMBED_COLORS[data.event] || 0x3498db,
+              footer: { text: data.event.toUpperCase() },
+              timestamp: new Date().toISOString(),
+            })
+          } else {
+            await discord.sendMessage(notifChannelId, `${emoji} **[${data.worker}]** ${data.summary}`)
+          }
         } catch (err) {
           console.error(`[http] Failed to post notification:`, err)
         }

@@ -170,6 +170,7 @@ Worker commands:
     --project <name>                      Attach to a project
     --template <name>                     System prompt template (default: "default")
     --model <model>                       Model override
+    --after <worker>                      Wait for worker to finish before starting
     --no-permissions-skip                 Require permission approvals
 
   send <name> <message>                   Send a directive to a worker
@@ -196,6 +197,7 @@ Memory commands:
   memory rebuild [--all] [--project <n>]  Rebuild memory indexes
   memory promote <worker> <id> --to <dst> Promote worker memory
   memory add <layer> <id> <title> [opts]  Create a memory entry
+  memory consolidate --user|--project <n> Merge/dedup memories
 EOF
 }
 
@@ -205,7 +207,7 @@ cmd_spawn() {
 
   # Parse arguments
   local name="" dir="" prompt=""
-  local ssh_host="" project="" template="default" model="" no_perms_skip=false
+  local ssh_host="" project="" template="default" model="" no_perms_skip=false after=""
   local positional=()
 
   while [ $# -gt 0 ]; do
@@ -214,6 +216,7 @@ cmd_spawn() {
       --project)    project="$2"; shift 2 ;;
       --template)   template="$2"; shift 2 ;;
       --model)      model="$2"; shift 2 ;;
+      --after)      after="$2"; shift 2 ;;
       --no-permissions-skip) no_perms_skip=true; shift ;;
       -*)           die "Unknown option: $1" ;;
       *)            positional+=("$1"); shift ;;
@@ -293,9 +296,21 @@ cmd_spawn() {
   "ssh_host": $([ -n "$ssh_host" ] && echo "\"$ssh_host\"" || echo "null"),
   "tmux_session": "${TMUX_PREFIX}${name}",
   "model": "$model",
-  "template": "$template"
+  "template": "$template",
+  "depends_on": $([ -n "$after" ] && echo "\"$after\"" || echo "null")
 }
 METAEOF
+
+  # If --after is specified, defer launch
+  if [ -n "$after" ]; then
+    echo "waiting" > "$worker_dir/status"
+    echo "$prompt" > "$worker_dir/task"
+    date +%s > "$worker_dir/heartbeat"
+    echo "Worker '$name' created with dependency on '$after'."
+    echo "  Will auto-launch when '$after' completes (status → done)."
+    echo "  The monitor checks every 60 seconds."
+    return
+  fi
 
   # Write status and task
   echo "starting" > "$worker_dir/status"
@@ -348,6 +363,21 @@ METAEOF
     "PROJECT_MEMORY_INDEX=$project_memory_index" \
     "PATTERNS_MEMORY_INDEX=$patterns_memory_index" \
     > "$worker_dir/system-prompt.md"
+
+  # Append project-specific worker template from memory (if exists)
+  if [ -n "$project" ]; then
+    local project_template="$ORCH_HOME/projects/$project/memory/worker-template.md"
+    if [ -f "$project_template" ]; then
+      # Strip frontmatter and append
+      local custom_instructions
+      if head -1 "$project_template" | grep -q "^---$"; then
+        custom_instructions=$(awk 'BEGIN{skip=0;first=1} {if(first && $0=="---"){skip=1;first=0;next} if(skip && $0=="---"){skip=0;next} if(!skip) print}' "$project_template")
+      else
+        custom_instructions=$(<"$project_template")
+      fi
+      printf '\n## Project-Specific Instructions\n%s\n' "$custom_instructions" >> "$worker_dir/system-prompt.md"
+    fi
+  fi
 
   # Generate worker settings.json with hook
   cat > "$worker_dir/settings.json" <<SETEOF
@@ -993,12 +1023,13 @@ cmd_memory() {
   shift 2>/dev/null || true
 
   case "$subcmd" in
-    list)    cmd_memory_list "$@" ;;
-    show)    cmd_memory_show "$@" ;;
-    rebuild) cmd_memory_rebuild "$@" ;;
-    promote) cmd_memory_promote "$@" ;;
-    add)     cmd_memory_add "$@" ;;
-    *)       die "Usage: orch memory <list|show|rebuild|promote|add> [args]" ;;
+    list)        cmd_memory_list "$@" ;;
+    show)        cmd_memory_show "$@" ;;
+    rebuild)     cmd_memory_rebuild "$@" ;;
+    promote)     cmd_memory_promote "$@" ;;
+    add)         cmd_memory_add "$@" ;;
+    consolidate) cmd_memory_consolidate "$@" ;;
+    *)           die "Usage: orch memory <list|show|rebuild|promote|add|consolidate> [args]" ;;
   esac
 }
 
@@ -1246,9 +1277,108 @@ MEMEOF
   echo "  Edit the full content at: $mem_dir/${id}.md"
 }
 
+cmd_memory_consolidate() {
+  require_claude
+
+  local target_dir="" target_label="" project_name=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --user) target_dir="$MEMORY_DIR/user"; target_label="user memory"; shift ;;
+      --project) project_name="$2"; target_dir="$ORCH_HOME/projects/$2/memory"; target_label="project '$2' memory"; shift 2 ;;
+      *) die "Usage: orch memory consolidate [--user | --project <name>]" ;;
+    esac
+  done
+
+  [ -n "$target_dir" ] || die "Specify --user or --project <name>"
+  [ -d "$target_dir" ] || die "No memory directory at $target_dir"
+
+  local mem_count=0
+  shopt -s nullglob
+  for f in "$target_dir"/*.md; do
+    [ "$(basename "$f")" = "_index.md" ] && continue
+    mem_count=$((mem_count + 1))
+  done
+  shopt -u nullglob
+
+  if [ "$mem_count" -lt 2 ]; then
+    echo "Only $mem_count memory file(s) in $target_label. Nothing to consolidate."
+    return
+  fi
+
+  echo "Consolidating $mem_count memories in $target_label..."
+  echo "Spawning a haiku worker to review and merge..."
+
+  local consolidate_prompt="Read ALL memory files in $target_dir/. There are $mem_count files. For each file, read its content. Then: (1) Identify duplicates or near-duplicates and merge them into single entries. (2) Identify outdated entries and update or remove them. (3) Identify entries that can be combined into a more useful summary. Write consolidated memory files back to the same directory. For merged entries, set supersedes: <old-id> in the frontmatter. Delete the old files after creating the merged version. Rebuild the index when done: run 'orch memory rebuild $([ -n "$project_name" ] && echo "--project $project_name" || echo "--user")'. Post a summary of what you changed."
+
+  local worker_name="consolidate-$(date +%s)"
+  orch spawn "$worker_name" "$(pwd)" "$consolidate_prompt" --model haiku
+
+  echo "Consolidation worker '$worker_name' spawned."
+  echo "  Check progress: orch logs $worker_name"
+}
+
 # =============================================================================
 # Attach
 # =============================================================================
+
+cmd_spawn_deferred() {
+  # Internal command: launches a worker that was deferred with --after
+  [ $# -ge 1 ] || die "Usage: orch spawn-deferred <name>"
+  local name="$1"
+
+  require_worker "$name"
+  require_tmux
+  require_claude
+
+  local worker_dir="$WORKERS_DIR/$name"
+  local meta_file="$worker_dir/meta.json"
+
+  [ -f "$meta_file" ] || die "No meta.json for worker '$name'"
+
+  if command -v jq &>/dev/null; then
+    local dir model prompt tmux_session
+    dir=$(jq -r '.dir // empty' "$meta_file")
+    model=$(jq -r '.model // "sonnet"' "$meta_file")
+    prompt=$(jq -r '.prompt // empty' "$meta_file")
+    tmux_session=$(jq -r '.tmux_session // empty' "$meta_file")
+
+    [ -n "$dir" ] || die "No directory in meta.json"
+    [ -n "$tmux_session" ] || tmux_session="${TMUX_PREFIX}${name}"
+
+    echo "starting" > "$worker_dir/status"
+    date +%s > "$worker_dir/heartbeat"
+
+    local perms_skip
+    perms_skip=$(read_config "permissions_skip" "true")
+
+    tmux new-session -d -s "$tmux_session" -c "$dir"
+    tmux send-keys -t "$tmux_session" "export ORCH_WORKER_NAME='$name' ORCH_HOME='$ORCH_HOME'" Enter
+
+    local claude_cmd="claude --name '${name}' --system-prompt-file '${worker_dir}/system-prompt.md' --settings '${worker_dir}/settings.json' --model '${model}' --add-dir '${worker_dir}'"
+    [ "$perms_skip" = "true" ] && claude_cmd+=" --dangerously-skip-permissions"
+
+    tmux send-keys -t "$tmux_session" "$claude_cmd" Enter
+
+    if [ "$perms_skip" = "true" ]; then
+      sleep 4
+      tmux send-keys -t "$tmux_session" Down
+      sleep 0.5
+      tmux send-keys -t "$tmux_session" Enter
+    fi
+
+    sleep 4
+    printf '%s' "$prompt" | tmux load-buffer -b "orch-prompt-${name}" -
+    tmux paste-buffer -b "orch-prompt-${name}" -t "$tmux_session"
+    tmux send-keys -t "$tmux_session" Enter
+    tmux delete-buffer -b "orch-prompt-${name}" 2>/dev/null || true
+
+    echo "running" > "$worker_dir/status"
+    echo "Deferred worker '$name' launched."
+  else
+    die "jq is required for spawn-deferred"
+  fi
+}
 
 cmd_attach() {
   [ $# -ge 1 ] || die "Usage: orch attach <name>"
@@ -1330,6 +1460,7 @@ case "${1:-help}" in
   attach)  shift; cmd_attach "$@" ;;
   start)   shift; cmd_start "$@" ;;
   stop)    shift; cmd_stop "$@" ;;
+  spawn-deferred) shift; cmd_spawn_deferred "$@" ;;
   project) shift; cmd_project "$@" ;;
   memory)  shift; cmd_memory "$@" ;;
   help|-h|--help) cmd_help ;;

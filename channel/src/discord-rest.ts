@@ -45,6 +45,21 @@ export async function sendMessage(channelId: string, content: string): Promise<{
   })
 }
 
+/** Send a message with an embed. Returns the message object. */
+export async function sendEmbed(channelId: string, embed: {
+  title?: string
+  description?: string
+  color?: number
+  fields?: Array<{ name: string; value: string; inline?: boolean }>
+  footer?: { text: string }
+  timestamp?: string
+}): Promise<{ id: string }> {
+  return discordFetch(`/channels/${channelId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ embeds: [embed] }),
+  })
+}
+
 /** Edit an existing message. */
 export async function editMessage(channelId: string, messageId: string, content: string): Promise<{ id: string }> {
   return discordFetch(`/channels/${channelId}/messages/${messageId}`, {
