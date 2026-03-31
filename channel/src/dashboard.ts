@@ -119,12 +119,44 @@ function getMemories(): MemoryData[] {
 
 function esc(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') }
 
+// Estimate cost per tool call by model (input + output tokens, rough avg)
+function estimateCost(toolCount: number, model: string): { tokens: number; cost: number } {
+  const tokensPerCall = 800 // avg tokens per tool call round-trip
+  const tokens = toolCount * tokensPerCall
+  // $/M tokens: input + output blended rate
+  const rates: Record<string, number> = {
+    opus: 0.009, // ~$9/M blended
+    sonnet: 0.0024, // ~$2.40/M blended
+    haiku: 0.0005, // ~$0.50/M blended
+  }
+  const rate = rates[model] || rates.sonnet
+  return { tokens, cost: (tokens / 1000) * rate }
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 1000000) return (n / 1000).toFixed(1) + 'k'
+  return (n / 1000000).toFixed(2) + 'M'
+}
+
+function formatCost(c: number): string {
+  if (c < 0.01) return '<$0.01'
+  return '$' + c.toFixed(2)
+}
+
+function costClass(c: number): string {
+  if (c < 1) return 'green'
+  if (c < 5) return 'yellow'
+  return 'red'
+}
+
 export function renderDashboard(): string {
   const workers = getWorkers()
   const projects = getProjects()
   const memories = getMemories()
   const active = workers.filter(w => w.status === 'running')
   const totalTools = workers.reduce((s, w) => s + w.toolCount, 0)
+  const totalEst = workers.reduce((s, w) => { const e = estimateCost(w.toolCount, w.model); return { tokens: s.tokens + e.tokens, cost: s.cost + e.cost } }, { tokens: 0, cost: 0 })
 
   const badge = (s: string, cls: string) => `<span class="badge ${cls}">${esc(s)}</span>`
   const statusBadge = (s: string) => {
@@ -171,7 +203,7 @@ body { font-family: 'Inter', sans-serif; background: var(--bg-0); color: var(--t
 .theme-btn { background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; color: var(--text-1); cursor: pointer; font-size: 0.75rem; font-family: 'Inter', sans-serif; }
 .theme-btn:hover { background: var(--bg-3); }
 
-.stats { display: grid; grid-template-columns: repeat(4,1fr); gap: .75rem; margin-bottom: 1.5rem; }
+.stats { display: grid; grid-template-columns: repeat(6,1fr); gap: .75rem; margin-bottom: 1.5rem; }
 .stat { background: var(--bg-1); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.25rem; }
 .stat-v { font-size: 1.75rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; line-height: 1; }
 .stat-l { font-size: .65rem; color: var(--text-2); text-transform: uppercase; letter-spacing: .06em; margin-top: .2rem; }
@@ -226,7 +258,7 @@ tr.stale { background: rgba(234,179,8,.05); }
 .notif-time { font-family: 'JetBrains Mono', monospace; font-size: .6rem; color: var(--text-2); white-space: nowrap; }
 .notif-text { flex: 1; }
 
-@media (max-width: 900px) { .stats{grid-template-columns:repeat(2,1fr)} .grid-2,.grid-3{grid-template-columns:1fr} .wrap{padding:1rem} }
+@media (max-width: 900px) { .stats{grid-template-columns:repeat(3,1fr)} .grid-2,.grid-3{grid-template-columns:1fr} .wrap{padding:1rem} }
 </style>
 </head>
 <body>
@@ -244,15 +276,18 @@ tr.stale { background: rgba(234,179,8,.05); }
     <div class="stat"><div class="stat-v">${workers.length}</div><div class="stat-l">Total Workers</div></div>
     <div class="stat"><div class="stat-v">${projects.length}</div><div class="stat-l">Projects</div></div>
     <div class="stat"><div class="stat-v">${totalTools.toLocaleString()}</div><div class="stat-l">Tool Calls</div></div>
+    <div class="stat"><div class="stat-v">${formatTokens(totalEst.tokens)}</div><div class="stat-l">Est. Tokens</div></div>
+    <div class="stat"><div class="stat-v"><span class="${costClass(totalEst.cost)}">${formatCost(totalEst.cost)}</span></div><div class="stat-l">Est. Cost</div></div>
   </div>
 
   <div class="sec">
     <div class="sec-h"><div class="sec-t">Workers</div><div class="sec-c">${workers.length}</div></div>
     <div class="card">
       ${workers.length > 0 ? `<table>
-        <tr><th>Worker</th><th>Status</th><th>Model</th><th>Project</th><th>Uptime</th><th>Heartbeat</th><th>Tools</th><th></th></tr>
+        <tr><th>Worker</th><th>Status</th><th>Model</th><th>Project</th><th>Uptime</th><th>Heartbeat</th><th>Tools</th><th>Est. Cost</th><th></th></tr>
         ${workers.map(w => {
           const stale = w.status === 'running' && w.heartbeatAge > 600
+          const est = estimateCost(w.toolCount, w.model)
           return `<tr${stale ? ' class="stale"' : ''}>
             <td><div class="w-name">${esc(w.name)}</div>${w.task ? `<div class="w-task">${esc(w.task)}</div>` : ''}</td>
             <td>${statusBadge(w.status)}${!w.tmuxAlive && w.status === 'running' ? ' ' + badge('tmux dead', 'red sm') : ''}</td>
@@ -261,6 +296,7 @@ tr.stale { background: rgba(234,179,8,.05); }
             <td class="mono">${esc(w.uptime)}</td>
             <td class="mono${stale ? ' dim' : ''}">${esc(w.heartbeat)}</td>
             <td class="mono">${w.toolCount.toLocaleString()}</td>
+            <td class="mono"><span class="${costClass(est.cost)}">${formatCost(est.cost)}</span></td>
             <td>${w.tmuxAlive ? `<button class="btn btn-sm" onclick="showLogs('${esc(w.name)}')">Logs</button>` : ''}</td>
           </tr>`
         }).join('')}
