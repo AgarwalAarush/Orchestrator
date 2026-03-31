@@ -41,10 +41,7 @@ function humanDuration(seconds: number): string {
 }
 
 function tmuxAlive(sessionName: string): boolean {
-  try {
-    execSync(`tmux has-session -t "${sessionName}"`, { stdio: 'ignore', timeout: 2000 })
-    return true
-  } catch { return false }
+  try { execSync(`tmux has-session -t "${sessionName}"`, { stdio: 'ignore', timeout: 2000 }); return true } catch { return false }
 }
 
 function getWorkers(): WorkerData[] {
@@ -91,7 +88,7 @@ function getProjects(): ProjectData[] {
           try { const m = JSON.parse(readFileSync(join(workersDir, w, 'meta.json'), 'utf-8')); if (m.project === name) workerCount++ } catch {}
         }
       }
-      projects.push({ name, status: 'active', memoryCount, channelId: info.channelId || null, workerCount, context: (info.context || '').slice(0, 300) })
+      projects.push({ name, status: workerCount > 0 ? 'active' : 'idle', memoryCount, channelId: info.channelId || null, workerCount, context: (info.context || '').slice(0, 300) })
     }
   }
   return projects
@@ -117,38 +114,16 @@ function getMemories(): MemoryData[] {
   return memories
 }
 
-function esc(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') }
+function esc(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;') }
 
-// Estimate cost per tool call by model (input + output tokens, rough avg)
 function estimateCost(toolCount: number, model: string): { tokens: number; cost: number } {
-  const tokensPerCall = 800 // avg tokens per tool call round-trip
-  const tokens = toolCount * tokensPerCall
-  // $/M tokens: input + output blended rate
-  const rates: Record<string, number> = {
-    opus: 0.009, // ~$9/M blended
-    sonnet: 0.0024, // ~$2.40/M blended
-    haiku: 0.0005, // ~$0.50/M blended
-  }
-  const rate = rates[model] || rates.sonnet
-  return { tokens, cost: (tokens / 1000) * rate }
+  const tokens = toolCount * 800
+  const rates: Record<string, number> = { opus: 0.009, sonnet: 0.0024, haiku: 0.0005 }
+  return { tokens, cost: (tokens / 1000) * (rates[model] || rates.sonnet) }
 }
 
-function formatTokens(n: number): string {
-  if (n < 1000) return String(n)
-  if (n < 1000000) return (n / 1000).toFixed(1) + 'k'
-  return (n / 1000000).toFixed(2) + 'M'
-}
-
-function formatCost(c: number): string {
-  if (c < 0.01) return '<$0.01'
-  return '$' + c.toFixed(2)
-}
-
-function costClass(c: number): string {
-  if (c < 1) return 'green'
-  if (c < 5) return 'yellow'
-  return 'red'
-}
+function fmtTokens(n: number): string { return n < 1000 ? String(n) : n < 1000000 ? (n / 1000).toFixed(1) + 'k' : (n / 1000000).toFixed(2) + 'M' }
+function fmtCost(c: number): string { return c < 0.01 ? '<$0.01' : '$' + c.toFixed(2) }
 
 export function renderDashboard(): string {
   const workers = getWorkers()
@@ -158,390 +133,329 @@ export function renderDashboard(): string {
   const totalTools = workers.reduce((s, w) => s + w.toolCount, 0)
   const totalEst = workers.reduce((s, w) => { const e = estimateCost(w.toolCount, w.model); return { tokens: s.tokens + e.tokens, cost: s.cost + e.cost } }, { tokens: 0, cost: 0 })
 
-  const badge = (s: string, cls: string) => `<span class="badge ${cls}">${esc(s)}</span>`
   const statusBadge = (s: string) => {
-    const m: Record<string, string> = { running: 'green', done: 'blue', error: 'red', killed: 'gray', waiting: 'yellow', starting: 'yellow' }
-    return badge(s, m[s] || 'gray')
+    const colors: Record<string, string> = { running: '#4DE082', done: '#4D8EFF', error: '#FFB4AB', killed: '#474747', waiting: '#EAB308', starting: '#EAB308' }
+    const c = colors[s] || '#474747'
+    return `<span class="inline-flex items-center px-2 py-0.5 border border-[${c}] bg-[${c}]/5 text-[${c}] font-mono text-[10px] uppercase">${esc(s)}</span>`
   }
-  const catBadge = (c: string) => {
-    const m: Record<string, string> = { environment: 'teal', 'experiment-result': 'purple', decision: 'blue', preference: 'pink', procedure: 'orange', warning: 'red', reference: 'gray' }
-    return `<span class="badge sm ${m[c] || 'gray'}">${esc(c)}</span>`
+
+  const memCategoryColor: Record<string, string> = {
+    environment: '#4DE082', 'experiment-result': '#4D8EFF', decision: '#D8E2FF',
+    preference: '#EC4899', procedure: '#F97316', warning: '#FFB4AB', reference: '#474747'
   }
 
   return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Orchestrator</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>ORCHESTRATOR</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"><\/script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&family=Roboto+Mono&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<script>
+tailwind.config = {
+  darkMode: "class",
+  theme: { extend: {
+    fontFamily: { headline: ["Space Grotesk"], body: ["Inter"], mono: ["Roboto Mono"] },
+    borderRadius: { DEFAULT: "0px", lg: "0px", xl: "0px", full: "0px" },
+  }},
+}
+<\/script>
 <style>
-:root {
-  --bg-0: #0c0c14; --bg-1: #12121c; --bg-2: #1a1a26; --bg-3: #222230;
-  --border: #2a2a3c; --text-0: #f0f0f8; --text-1: #b0b0c0; --text-2: #666680;
-  --accent: #7c3aed; --accent-l: #a78bfa;
-  --green: #22c55e; --blue: #3b82f6; --red: #ef4444; --yellow: #eab308;
-  --gray: #6b7280; --teal: #14b8a6; --purple: #a855f7; --pink: #ec4899; --orange: #f97316;
-}
-.light {
-  --bg-0: #fafafa; --bg-1: #ffffff; --bg-2: #f4f4f5; --bg-3: #e8e8ec;
-  --border: #e0e0e8; --text-0: #111118; --text-1: #555560; --text-2: #999;
-  --accent: #7c3aed; --accent-l: #6d28d9;
-}
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Inter', sans-serif; background: var(--bg-0); color: var(--text-0); -webkit-font-smoothing: antialiased; }
-.wrap { max-width: 1280px; margin: 0 auto; padding: 1.5rem 2rem 4rem; }
-.hdr { display: flex; align-items: center; justify-content: space-between; padding-bottom: 1.25rem; border-bottom: 1px solid var(--border); margin-bottom: 1.5rem; }
-.hdr h1 { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.03em; }
-.hdr h1 b { color: var(--accent); }
-.hdr-r { display: flex; align-items: center; gap: 1rem; }
-.live { font-size: 0.7rem; color: var(--text-2); font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 6px; }
-.dot { width: 6px; height: 6px; background: var(--green); border-radius: 50%; animation: pulse 2s infinite; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-.theme-btn { background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; color: var(--text-1); cursor: pointer; font-size: 0.75rem; font-family: 'Inter', sans-serif; }
-.theme-btn:hover { background: var(--bg-3); }
-
-.stats { display: grid; grid-template-columns: repeat(6,1fr); gap: .75rem; margin-bottom: 1.5rem; }
-.stat { background: var(--bg-1); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.25rem; }
-.stat-v { font-size: 1.75rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; line-height: 1; }
-.stat-l { font-size: .65rem; color: var(--text-2); text-transform: uppercase; letter-spacing: .06em; margin-top: .2rem; }
-
-.sec { margin-bottom: 1.5rem; }
-.sec-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: .5rem; }
-.sec-t { font-size: .75rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .06em; }
-.sec-c { font-size: .7rem; color: var(--text-2); font-family: 'JetBrains Mono', monospace; }
-
-.card { background: var(--bg-1); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-table { width: 100%; border-collapse: collapse; }
-th { text-align: left; padding: .6rem .85rem; font-size: .6rem; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: .06em; background: var(--bg-2); border-bottom: 1px solid var(--border); }
-td { padding: .6rem .85rem; font-size: .8rem; border-bottom: 1px solid var(--border); vertical-align: top; }
-tr:last-child td { border-bottom: none; }
-tr:hover { background: var(--bg-2); }
-tr.stale { background: rgba(234,179,8,.05); }
-
-.badge { display: inline-block; padding: 2px 8px; border-radius: 5px; font-size: .65rem; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
-.badge.sm { font-size: .55rem; padding: 1px 6px; }
-.green { background: rgba(34,197,94,.12); color: var(--green); }
-.blue { background: rgba(59,130,246,.12); color: var(--blue); }
-.red { background: rgba(239,68,68,.12); color: var(--red); }
-.yellow { background: rgba(234,179,8,.12); color: var(--yellow); }
-.gray { background: rgba(107,114,128,.12); color: var(--gray); }
-.teal { background: rgba(20,184,166,.12); color: var(--teal); }
-.purple { background: rgba(168,85,247,.12); color: var(--purple); }
-.pink { background: rgba(236,72,153,.12); color: var(--pink); }
-.orange { background: rgba(249,115,22,.12); color: var(--orange); }
-
-.mono { font-family: 'JetBrains Mono', monospace; font-size: .75rem; }
-.dim { color: var(--text-2); }
-.w-name { font-weight: 600; }
-.w-task { font-size: .7rem; color: var(--text-2); margin-top: 2px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model { font-family: 'JetBrains Mono', monospace; font-size: .7rem; color: var(--accent-l); }
-.empty { color: var(--text-2); font-style: italic; padding: 1.5rem; text-align: center; font-size: .85rem; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
-
-/* Logs panel */
-.logs-panel { display: none; background: var(--bg-1); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; margin-top: .5rem; }
-.logs-panel.active { display: block; }
-.logs-pre { background: var(--bg-0); border: 1px solid var(--border); border-radius: 8px; padding: .75rem; font-family: 'JetBrains Mono', monospace; font-size: .7rem; color: var(--text-1); overflow-x: auto; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; line-height: 1.5; }
-.logs-title { font-size: .75rem; font-weight: 600; margin-bottom: .5rem; color: var(--text-1); }
-
-.btn { background: var(--bg-2); border: 1px solid var(--border); border-radius: 6px; padding: 3px 10px; color: var(--text-1); cursor: pointer; font-size: .65rem; font-family: 'Inter', sans-serif; }
-.btn:hover { background: var(--bg-3); color: var(--text-0); }
-.btn-sm { padding: 2px 7px; font-size: .6rem; }
-
-/* Notification feed */
-.notif-item { padding: .5rem .85rem; border-bottom: 1px solid var(--border); font-size: .8rem; display: flex; gap: .75rem; align-items: baseline; }
-.notif-item:last-child { border-bottom: none; }
-.notif-time { font-family: 'JetBrains Mono', monospace; font-size: .6rem; color: var(--text-2); white-space: nowrap; }
-.notif-text { flex: 1; }
-
+.material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24; }
+body { background-color: #0A0A0A; color: #E5E2E1; font-family: 'Inter', sans-serif; }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #0E0E0E; }
+::-webkit-scrollbar-thumb { background: #474747; }
 /* Command Palette */
-.cmd-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 100; backdrop-filter: blur(4px); justify-content: center; align-items: flex-start; padding-top: 15vh; }
+.cmd-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 200; backdrop-filter: blur(4px); justify-content: center; align-items: flex-start; padding-top: 15vh; }
 .cmd-overlay.active { display: flex; }
-.cmd-modal { background: var(--bg-1); border: 1px solid var(--border); border-radius: 12px; width: 560px; max-width: 90vw; box-shadow: 0 20px 60px rgba(0,0,0,.4); }
-.cmd-header { display: flex; align-items: center; gap: .5rem; padding: .75rem 1rem; border-bottom: 1px solid var(--border); }
-.cmd-icon { color: var(--accent); font-family: 'JetBrains Mono', monospace; font-weight: 700; }
-.cmd-input { flex: 1; background: none; border: none; color: var(--text-0); font-family: 'JetBrains Mono', monospace; font-size: .85rem; outline: none; }
-.cmd-input::placeholder { color: var(--text-2); }
-.cmd-output { max-height: 300px; overflow-y: auto; padding: .75rem 1rem; font-family: 'JetBrains Mono', monospace; font-size: .75rem; color: var(--text-1); white-space: pre-wrap; word-break: break-all; line-height: 1.5; }
+.cmd-modal { background: #131313; border: 1px solid #1C1B1B; width: 560px; max-width: 90vw; }
+.cmd-input { width: 100%; background: #0E0E0E; border: none; border-bottom: 1px solid #1C1B1B; padding: 14px 16px; color: #E5E2E1; font-family: 'Roboto Mono', monospace; font-size: 13px; outline: none; }
+.cmd-input::placeholder { color: #474747; }
+.cmd-output { max-height: 300px; overflow-y: auto; padding: 12px 16px; font-family: 'Roboto Mono', monospace; font-size: 11px; color: #C6C6C6; white-space: pre-wrap; word-break: break-all; }
 .cmd-output:empty { display: none; }
-.cmd-footer { display: flex; justify-content: space-between; padding: .5rem 1rem; border-top: 1px solid var(--border); font-size: .65rem; }
-
+.cmd-footer { display: flex; justify-content: space-between; padding: 8px 16px; border-top: 1px solid #1C1B1B; font-family: 'Roboto Mono', monospace; font-size: 9px; color: #474747; text-transform: uppercase; letter-spacing: 0.05em; }
 /* Memory Modal */
-.mem-modal { width: 640px; }
-.mem-header { padding: .75rem 1rem; font-weight: 600; font-size: .85rem; border-bottom: 1px solid var(--border); color: var(--accent-l); }
-.mem-content { padding: 1rem; font-family: 'JetBrains Mono', monospace; font-size: .75rem; color: var(--text-1); white-space: pre-wrap; word-break: break-all; line-height: 1.6; max-height: 400px; overflow-y: auto; margin: 0; background: none; }
-
-/* Dependency Graph */
-#dep-sec { display: none; }
-#dep-canvas { width: 100%; border-radius: 10px; background: var(--bg-1); border: 1px solid var(--border); }
-
-/* Memory clickable rows */
-.mem-row { cursor: pointer; }
-.mem-row:hover { background: var(--bg-3); }
-
-@media (max-width: 900px) { .stats{grid-template-columns:repeat(3,1fr)} .grid-2,.grid-3{grid-template-columns:1fr} .wrap{padding:1rem} .cmd-modal,.mem-modal{width:95vw} }
+.mem-modal { width: 640px; max-width: 90vw; }
+.mem-header { padding: 12px 16px; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 12px; border-bottom: 1px solid #1C1B1B; color: #4DE082; text-transform: uppercase; letter-spacing: 0.05em; }
+.mem-content { padding: 16px; font-family: 'Roboto Mono', monospace; font-size: 11px; color: #C6C6C6; white-space: pre-wrap; word-break: break-all; line-height: 1.6; max-height: 400px; overflow-y: auto; margin: 0; background: none; }
+/* Logs */
+.logs-panel { display: none; border: 1px solid #1C1B1B; background: #131313; margin-top: 8px; }
+.logs-panel.active { display: block; }
+.logs-pre { background: #0E0E0E; padding: 12px; font-family: 'Roboto Mono', monospace; font-size: 11px; color: #C6C6C6; overflow-x: auto; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; line-height: 1.5; margin: 0; }
 </style>
 </head>
-<body>
-<div class="wrap">
-  <div class="hdr">
-    <h1><b>Claude</b> Orchestrator</h1>
-    <div class="hdr-r">
-      <div class="live"><span class="dot"></span> Live</div>
-      <button class="theme-btn" onclick="toggleTheme()">Toggle theme</button>
+<body class="flex min-h-screen overflow-hidden">
+
+<!-- Sidebar -->
+<aside class="fixed left-0 top-0 h-full w-56 border-r border-[#1C1B1B] bg-[#0E0E0E] flex flex-col z-50">
+  <div class="p-5">
+    <div class="text-lg font-bold tracking-tighter text-white font-headline">ORCHESTRATOR</div>
+    <div class="font-headline uppercase tracking-[0.05rem] text-[10px] text-[#4DE082] mt-0.5">SYSTEM MONITOR</div>
+  </div>
+  <nav class="flex-1 mt-2">
+    <a class="flex items-center gap-3 px-5 py-2.5 text-[#4DE082] border-l-2 border-[#4DE082] bg-[#1C1B1B] font-headline uppercase tracking-[0.05rem] text-xs" href="#">
+      <span class="material-symbols-outlined text-base">dashboard</span>DASHBOARD
+    </a>
+    <a class="flex items-center gap-3 px-5 py-2.5 text-[#C6C6C6] font-headline uppercase tracking-[0.05rem] text-xs hover:bg-[#1C1B1B] hover:text-white" href="#">
+      <span class="material-symbols-outlined text-base">account_tree</span>PROJECTS
+    </a>
+    <a class="flex items-center gap-3 px-5 py-2.5 text-[#C6C6C6] font-headline uppercase tracking-[0.05rem] text-xs hover:bg-[#1C1B1B] hover:text-white" href="#">
+      <span class="material-symbols-outlined text-base">engineering</span>WORKERS
+    </a>
+    <a class="flex items-center gap-3 px-5 py-2.5 text-[#C6C6C6] font-headline uppercase tracking-[0.05rem] text-xs hover:bg-[#1C1B1B] hover:text-white" href="#">
+      <span class="material-symbols-outlined text-base">memory</span>MEMORY
+    </a>
+  </nav>
+  <div class="border-t border-[#1C1B1B] py-3">
+    <a class="flex items-center gap-3 px-5 py-2 text-[#C6C6C6] font-headline uppercase tracking-[0.05rem] text-xs hover:bg-[#1C1B1B]" onclick="openPalette()" href="#" style="cursor:pointer">
+      <span class="material-symbols-outlined text-base">terminal</span>COMMAND (&#8984;K)
+    </a>
+  </div>
+</aside>
+
+<!-- Main -->
+<main class="flex-1 ml-56 min-h-screen flex flex-col bg-[#0A0A0A]">
+  <!-- Header -->
+  <header class="h-14 border-b border-[#1C1B1B] bg-[#131313] flex justify-between items-center px-6 sticky top-0 z-40">
+    <div class="text-sm font-bold text-white font-headline tracking-tighter uppercase">System Monitor</div>
+    <div class="flex items-center gap-4">
+      <div class="flex items-center gap-2 px-2.5 py-1 border border-[#4DE082] bg-[#4DE082]/10">
+        <div class="w-1.5 h-1.5 bg-[#4DE082] animate-pulse"></div>
+        <span class="font-headline text-[9px] tracking-widest text-[#4DE082] uppercase">Online</span>
+      </div>
+      <span class="material-symbols-outlined text-[#C6C6C6] cursor-pointer hover:text-white text-lg" onclick="openPalette()">terminal</span>
     </div>
-  </div>
+  </header>
 
-  <div class="stats">
-    <div class="stat"><div class="stat-v">${active.length}</div><div class="stat-l">Active Workers</div></div>
-    <div class="stat"><div class="stat-v">${workers.length}</div><div class="stat-l">Total Workers</div></div>
-    <div class="stat"><div class="stat-v">${projects.length}</div><div class="stat-l">Projects</div></div>
-    <div class="stat"><div class="stat-v">${totalTools.toLocaleString()}</div><div class="stat-l">Tool Calls</div></div>
-    <div class="stat"><div class="stat-v">${formatTokens(totalEst.tokens)}</div><div class="stat-l">Est. Tokens</div></div>
-    <div class="stat"><div class="stat-v"><span class="${costClass(totalEst.cost)}">${formatCost(totalEst.cost)}</span></div><div class="stat-l">Est. Cost</div></div>
-  </div>
-
-  <div class="sec" id="dep-sec">
-    <div class="sec-h"><div class="sec-t">Worker Dependencies</div></div>
-    <canvas id="dep-canvas" height="120"></canvas>
-  </div>
-
-  <div class="sec">
-    <div class="sec-h"><div class="sec-t">Workers</div><div class="sec-c">${workers.length}</div></div>
-    <div class="card">
-      ${workers.length > 0 ? `<table>
-        <tr><th>Worker</th><th>Status</th><th>Model</th><th>Project</th><th>Uptime</th><th>Heartbeat</th><th>Tools</th><th>Est. Cost</th><th></th></tr>
-        ${workers.map(w => {
-          const stale = w.status === 'running' && w.heartbeatAge > 600
-          const est = estimateCost(w.toolCount, w.model)
-          return `<tr${stale ? ' class="stale"' : ''}>
-            <td><div class="w-name">${esc(w.name)}</div>${w.task ? `<div class="w-task">${esc(w.task)}</div>` : ''}</td>
-            <td>${statusBadge(w.status)}${!w.tmuxAlive && w.status === 'running' ? ' ' + badge('tmux dead', 'red sm') : ''}</td>
-            <td><span class="model">${esc(w.model)}</span></td>
-            <td>${w.project ? esc(w.project) : '<span class="dim">-</span>'}</td>
-            <td class="mono">${esc(w.uptime)}</td>
-            <td class="mono${stale ? ' dim' : ''}">${esc(w.heartbeat)}</td>
-            <td class="mono">${w.toolCount.toLocaleString()}</td>
-            <td class="mono"><span class="${costClass(est.cost)}">${formatCost(est.cost)}</span></td>
-            <td>${w.tmuxAlive ? `<button class="btn btn-sm" onclick="showLogs('${esc(w.name)}')">Logs</button>` : ''}</td>
-          </tr>`
-        }).join('')}
-      </table>` : '<p class="empty">No workers spawned yet</p>'}
-    </div>
-    <div id="logs-panel" class="logs-panel">
-      <div class="logs-title" id="logs-title">Logs</div>
-      <pre class="logs-pre" id="logs-content">Loading...</pre>
-    </div>
-  </div>
-
-  <div class="grid-3">
-    <div class="sec">
-      <div class="sec-h"><div class="sec-t">Projects</div><div class="sec-c">${projects.length}</div></div>
-      <div class="card">
-        ${projects.length > 0 ? `<table>
-          <tr><th>Project</th><th>Workers</th><th>Memories</th></tr>
-          ${projects.map(p => `<tr>
-            <td><strong>${esc(p.name)}</strong></td>
-            <td class="mono">${p.workerCount}</td>
-            <td class="mono">${p.memoryCount}</td>
-          </tr>`).join('')}
-        </table>` : '<p class="empty">No projects</p>'}
+  <div class="p-6 space-y-6 overflow-y-auto h-[calc(100vh-3.5rem)]">
+    <!-- Stats -->
+    <div class="grid grid-cols-2 md:grid-cols-6 gap-0 border border-[#1C1B1B]">
+      <div class="bg-[#131313] p-5 border-r border-[#1C1B1B] relative overflow-hidden">
+        <div class="text-[#C6C6C6] font-headline text-[9px] tracking-widest uppercase mb-3">Active Workers</div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-3xl font-headline font-bold text-white tracking-tighter">${active.length}</span>
+          <span class="text-[#4DE082] font-mono text-[10px]">/ ${workers.length}</span>
+        </div>
+        <div class="absolute bottom-0 left-0 w-full h-0.5 bg-[#4DE082]/20"><div class="h-full bg-[#4DE082]" style="width:${workers.length ? Math.round(active.length / workers.length * 100) : 0}%"></div></div>
+      </div>
+      <div class="bg-[#131313] p-5 border-r border-[#1C1B1B]">
+        <div class="text-[#C6C6C6] font-headline text-[9px] tracking-widest uppercase mb-3">Projects</div>
+        <div class="text-3xl font-headline font-bold text-white tracking-tighter">${projects.length}</div>
+      </div>
+      <div class="bg-[#131313] p-5 border-r border-[#1C1B1B]">
+        <div class="text-[#C6C6C6] font-headline text-[9px] tracking-widest uppercase mb-3">Memories</div>
+        <div class="text-3xl font-headline font-bold text-white tracking-tighter">${memories.length}</div>
+      </div>
+      <div class="bg-[#131313] p-5 border-r border-[#1C1B1B]">
+        <div class="text-[#C6C6C6] font-headline text-[9px] tracking-widest uppercase mb-3">Tool Calls</div>
+        <div class="text-3xl font-headline font-bold text-white tracking-tighter">${totalTools.toLocaleString()}</div>
+      </div>
+      <div class="bg-[#131313] p-5 border-r border-[#1C1B1B]">
+        <div class="text-[#C6C6C6] font-headline text-[9px] tracking-widest uppercase mb-3">Est. Tokens</div>
+        <div class="text-3xl font-headline font-bold text-white tracking-tighter">${fmtTokens(totalEst.tokens)}</div>
+      </div>
+      <div class="bg-[#131313] p-5">
+        <div class="text-[#C6C6C6] font-headline text-[9px] tracking-widest uppercase mb-3">Est. Cost</div>
+        <div class="text-3xl font-headline font-bold ${totalEst.cost < 1 ? 'text-[#4DE082]' : totalEst.cost < 5 ? 'text-[#EAB308]' : 'text-[#FFB4AB]'} tracking-tighter">${fmtCost(totalEst.cost)}</div>
       </div>
     </div>
 
-    <div class="sec">
-      <div class="sec-h"><div class="sec-t">Memory</div><div class="sec-c">${memories.length} entries</div></div>
-      <div class="card">
-        ${memories.length > 0 ? `<table>
-          <tr><th>Cat</th><th>Title</th><th>Layer</th></tr>
-          ${memories.map(m => `<tr class="mem-row" onclick="showMemory('${esc(m.layer)}','${esc(m.id)}')">
-            <td>${catBadge(m.category)}</td>
-            <td>${esc(m.title)}</td>
-            <td><span class="dim">${esc(m.layer)}</span></td>
-          </tr>`).join('')}
-        </table>` : '<p class="empty">No memories</p>'}
+    <!-- Main Grid -->
+    <div class="grid grid-cols-12 gap-6">
+      <!-- Workers -->
+      <div class="col-span-12 lg:col-span-8 space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="font-headline font-bold text-base text-white tracking-tight uppercase">Workers</h2>
+        </div>
+        <div class="border border-[#1C1B1B] bg-[#131313]">
+          ${workers.length > 0 ? `<table class="w-full text-left border-collapse">
+            <thead><tr class="bg-[#1C1B1B]">
+              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Worker</th>
+              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Status</th>
+              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Model</th>
+              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Project</th>
+              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Heartbeat</th>
+              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Cost</th>
+              <th class="p-3 font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase text-right">Action</th>
+            </tr></thead>
+            <tbody class="divide-y divide-[#1C1B1B]/50">
+              ${workers.map(w => {
+                const est = estimateCost(w.toolCount, w.model)
+                const stale = w.status === 'running' && w.heartbeatAge > 600
+                return `<tr class="${stale ? 'bg-[#EAB308]/5' : ''}">
+                  <td class="p-3"><div class="font-mono text-sm text-white">${esc(w.name)}</div>${w.task ? `<div class="text-[10px] text-[#474747] font-mono mt-0.5 truncate max-w-[240px]">${esc(w.task)}</div>` : ''}</td>
+                  <td class="p-3">${statusBadge(w.status)}${!w.tmuxAlive && w.status === 'running' ? ' <span class="inline-flex items-center px-1.5 py-0.5 border border-[#FFB4AB] bg-[#FFB4AB]/5 text-[#FFB4AB] font-mono text-[9px] uppercase ml-1">DEAD</span>' : ''}</td>
+                  <td class="p-3 font-mono text-xs text-[#C6C6C6]">${esc(w.model)}</td>
+                  <td class="p-3 font-mono text-xs ${w.project ? 'text-[#C6C6C6]' : 'text-[#474747]'}">${w.project ? esc(w.project) : '-'}</td>
+                  <td class="p-3 font-mono text-[10px] ${stale ? 'text-[#EAB308]' : 'text-[#C6C6C6]'}">${esc(w.heartbeat)}</td>
+                  <td class="p-3 font-mono text-[10px] ${est.cost < 1 ? 'text-[#4DE082]' : est.cost < 5 ? 'text-[#EAB308]' : 'text-[#FFB4AB]'}">${fmtCost(est.cost)}</td>
+                  <td class="p-3 text-right">${w.tmuxAlive ? `<button onclick="showLogs('${esc(w.name)}')" class="text-[#4DE082] font-headline text-[10px] font-bold tracking-widest hover:underline">VIEW_LOGS</button>` : '<span class="text-[#474747] font-headline text-[10px]">OFFLINE</span>'}</td>
+                </tr>`
+              }).join('')}
+            </tbody>
+          </table>` : '<div class="p-8 text-center text-[#474747] font-mono text-xs uppercase">No workers spawned</div>'}
+        </div>
+        <div id="logs-panel" class="logs-panel">
+          <div class="flex items-center justify-between px-4 py-2 bg-[#1C1B1B]">
+            <span class="font-headline text-[10px] tracking-widest text-[#C6C6C6] uppercase" id="logs-title">Logs</span>
+            <button onclick="document.getElementById('logs-panel').classList.remove('active')" class="text-[#474747] hover:text-white material-symbols-outlined text-sm">close</button>
+          </div>
+          <pre class="logs-pre" id="logs-content">Loading...</pre>
+        </div>
+      </div>
+
+      <!-- Projects -->
+      <div class="col-span-12 lg:col-span-4 space-y-3">
+        <h2 class="font-headline font-bold text-base text-white tracking-tight uppercase">Projects</h2>
+        <div class="border border-[#1C1B1B] bg-[#131313]">
+          <div class="bg-[#1C1B1B] px-4 py-2.5"><div class="font-headline text-[9px] tracking-widest text-[#C6C6C6] uppercase">Project Registry</div></div>
+          ${projects.length > 0 ? `<div class="divide-y divide-[#1C1B1B]">
+            ${projects.map(p => `<div class="p-4 flex justify-between items-center hover:bg-[#1C1B1B]/40">
+              <div>
+                <div class="font-mono text-sm ${p.status === 'active' ? 'text-[#4DE082]' : 'text-white'}">${esc(p.name)}</div>
+                <div class="text-[10px] text-[#474747] font-mono uppercase mt-0.5">Status: ${esc(p.status)}</div>
+              </div>
+              <div class="text-right">
+                <div class="text-xs ${p.workerCount > 0 ? 'text-white' : 'text-[#474747]'} font-mono">${p.workerCount} WORKER${p.workerCount !== 1 ? 'S' : ''}</div>
+                <div class="text-[10px] text-[#474747] font-mono uppercase">${p.memoryCount} MEMOR${p.memoryCount !== 1 ? 'IES' : 'Y'}</div>
+              </div>
+            </div>`).join('')}
+          </div>` : '<div class="p-6 text-center text-[#474747] font-mono text-xs uppercase">No projects</div>'}
+        </div>
+      </div>
+
+      <!-- Memory Feed -->
+      <div class="col-span-12 lg:col-span-8 space-y-3">
+        <h2 class="font-headline font-bold text-base text-white tracking-tight uppercase">Memory Feed</h2>
+        ${memories.length > 0 ? `<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          ${memories.map(m => {
+            const c = memCategoryColor[m.category] || '#474747'
+            return `<div class="bg-[#1C1B1B] p-4 border-l-4 cursor-pointer hover:bg-[#222] flex flex-col justify-between min-h-[120px]" style="border-left-color:${c}" onclick="showMemory('${esc(m.layer)}','${esc(m.id)}')">
+              <div>
+                <div class="flex items-center gap-2 mb-2">
+                  <span class="text-[9px] font-mono px-1.5 py-0.5 uppercase tracking-tighter" style="background:${c}15;color:${c}">${esc(m.category)}</span>
+                  <span class="text-[#474747] text-[9px] font-mono uppercase">Layer: ${esc(m.layer)}</span>
+                </div>
+                <h3 class="text-white font-body text-sm leading-relaxed">${esc(m.title)}</h3>
+              </div>
+            </div>`
+          }).join('')}
+        </div>` : '<div class="border border-[#1C1B1B] bg-[#131313] p-6 text-center text-[#474747] font-mono text-xs uppercase">No memories stored</div>'}
+      </div>
+
+      <!-- System Log -->
+      <div class="col-span-12 lg:col-span-4 space-y-3">
+        <h2 class="font-headline font-bold text-base text-white tracking-tight uppercase">System Log</h2>
+        <div class="relative border-l border-[#1C1B1B] ml-2 pl-5 space-y-5 py-1" id="notif-timeline">
+          <div class="text-[#474747] font-mono text-[10px] uppercase">Loading...</div>
+        </div>
       </div>
     </div>
 
-    <div class="sec">
-      <div class="sec-h"><div class="sec-t">Recent Notifications</div></div>
-      <div class="card" id="notif-card">
-        <p class="empty" id="notif-empty">Loading...</p>
+    <!-- Footer -->
+    <footer class="pt-3 border-t border-[#1C1B1B] flex justify-between items-center font-mono text-[10px] text-[#474747]">
+      <div class="flex gap-5">
+        <span>WORKERS: ${workers.length}</span>
+        <span>MEMORIES: ${memories.length}</span>
+        <span>PORT: 9111</span>
       </div>
-    </div>
+      <div class="flex gap-4">
+        <span class="text-[#4DE082]">&#9679; ORCHESTRATOR ONLINE</span>
+      </div>
+    </footer>
   </div>
-</div>
+</main>
 
-<!-- Command Palette Modal -->
+<!-- Command Palette -->
 <div id="cmd-overlay" class="cmd-overlay" onclick="if(event.target===this)closePalette()">
   <div class="cmd-modal">
-    <div class="cmd-header">
-      <span class="cmd-icon">></span>
-      <input id="cmd-input" class="cmd-input" type="text" placeholder="Type a command... (spawn, kill, send, list, status, remodel, memory)" autofocus>
-    </div>
+    <input id="cmd-input" class="cmd-input" type="text" placeholder="> ENTER COMMAND..." autofocus>
     <div id="cmd-output" class="cmd-output"></div>
-    <div class="cmd-footer">
-      <span class="dim">Enter to run</span>
-      <span class="dim">Esc to close</span>
-    </div>
+    <div class="cmd-footer"><span>ENTER TO EXECUTE</span><span>ESC TO CLOSE</span></div>
   </div>
 </div>
 
-<!-- Memory Detail Modal -->
+<!-- Memory Modal -->
 <div id="mem-overlay" class="cmd-overlay" onclick="if(event.target===this)closeMemory()">
   <div class="cmd-modal mem-modal">
     <div class="mem-header" id="mem-header">Memory</div>
     <pre class="mem-content" id="mem-content">Loading...</pre>
-    <div class="cmd-footer"><span class="dim">Esc to close</span></div>
+    <div class="cmd-footer"><span>ESC TO CLOSE</span><span></span></div>
   </div>
 </div>
 
 <script>
-// Theme
-function toggleTheme() {
-  document.body.classList.toggle('light')
-  localStorage.setItem('theme', document.body.classList.contains('light') ? 'light' : 'dark')
-}
-if (localStorage.getItem('theme') === 'light') document.body.classList.add('light')
-
 // Logs
-async function showLogs(name) {
-  const panel = document.getElementById('logs-panel')
-  panel.classList.add('active')
-  document.getElementById('logs-title').textContent = 'Logs: ' + name
+async function showLogs(n) {
+  const p = document.getElementById('logs-panel'); p.classList.add('active')
+  document.getElementById('logs-title').textContent = 'LOGS: ' + n.toUpperCase()
   document.getElementById('logs-content').textContent = 'Loading...'
-  try {
-    const data = await (await fetch('/api/logs/' + name)).json()
-    document.getElementById('logs-content').textContent = data.logs || '(empty)'
-  } catch (e) { document.getElementById('logs-content').textContent = 'Error: ' + e.message }
+  try { const d = await (await fetch('/api/logs/'+n)).json(); document.getElementById('logs-content').textContent = d.logs||'(empty)' }
+  catch(e) { document.getElementById('logs-content').textContent = 'Error: '+e.message }
 }
 
 // Notifications
-async function loadNotifications() {
+async function loadNotifs() {
   try {
     const data = await (await fetch('/api/notifications')).json()
-    const card = document.getElementById('notif-card')
-    if (!data.length) { card.innerHTML = '<p class="empty">No notifications yet</p>'; return }
-    const emojis = { done: '\\u2705', update: '\\uD83D\\uDCCB', error: '\\u274C', blocked: '\\uD83D\\uDEAB' }
-    card.innerHTML = data.slice(0, 15).map(n => {
-      const time = new Date(n.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
-      return '<div class="notif-item"><span class="notif-time">' + time + '</span><span class="notif-text">' + (emojis[n.event]||'\\uD83D\\uDCCB') + ' <strong>' + n.worker + '</strong> ' + n.summary.slice(0,100) + '</span></div>'
+    const el = document.getElementById('notif-timeline')
+    if (!data.length) { el.innerHTML = '<div class="text-[#474747] font-mono text-[10px] uppercase">No activity</div>'; return }
+    const colors = { done:'#4DE082', update:'#C6C6C6', error:'#FFB4AB', blocked:'#EAB308' }
+    el.innerHTML = data.slice(0,10).map(n => {
+      const t = new Date(n.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})
+      const c = colors[n.event]||'#C6C6C6'
+      return '<div class="relative"><div class="absolute -left-[26px] top-1 w-2 h-2 border-2 border-[#0A0A0A]" style="background:'+c+'"></div><div class="flex justify-between"><span class="font-mono text-[10px] uppercase" style="color:'+c+'">'+n.event+'</span><span class="font-mono text-[10px] text-[#474747]">'+t+'</span></div><p class="text-xs text-[#C6C6C6] mt-0.5 font-body">'+n.worker+': '+n.summary.slice(0,80)+'</p></div>'
     }).join('')
   } catch {}
 }
-loadNotifications()
+loadNotifs()
 
 // Command Palette
-function openPalette() { document.getElementById('cmd-overlay').classList.add('active'); document.getElementById('cmd-input').focus(); document.getElementById('cmd-input').value = '' }
+function openPalette() { document.getElementById('cmd-overlay').classList.add('active'); const i=document.getElementById('cmd-input'); i.focus(); i.value='' }
 function closePalette() { document.getElementById('cmd-overlay').classList.remove('active') }
 document.addEventListener('keydown', e => {
-  if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); openPalette() }
-  if (e.key === 'Escape') { closePalette(); closeMemory() }
+  if ((e.metaKey||e.ctrlKey) && e.key==='k') { e.preventDefault(); openPalette() }
+  if (e.key==='Escape') { closePalette(); closeMemory() }
 })
 document.getElementById('cmd-input').addEventListener('keydown', async e => {
-  if (e.key !== 'Enter') return
-  const cmd = e.target.value.trim()
-  if (!cmd) return
-  const out = document.getElementById('cmd-output')
-  out.textContent = 'Running...'
+  if (e.key!=='Enter') return
+  const cmd = e.target.value.trim(); if (!cmd) return
+  const out = document.getElementById('cmd-output'); out.textContent = 'Executing...'
   try {
-    const data = await (await fetch('/api/command', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({command: cmd}) })).json()
-    out.textContent = data.output || (data.exitCode === 0 ? '(ok)' : '(error)')
-    // Save to history
-    const hist = JSON.parse(localStorage.getItem('cmd-history') || '[]')
-    hist.unshift(cmd); if (hist.length > 20) hist.pop()
-    localStorage.setItem('cmd-history', JSON.stringify(hist))
-  } catch (err) { out.textContent = 'Error: ' + err.message }
+    const d = await (await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})})).json()
+    out.textContent = d.output||(d.exitCode===0?'(ok)':'(error)')
+  } catch(err) { out.textContent='Error: '+err.message }
 })
 
-// Memory Browser
+// Memory
 async function showMemory(layer, id) {
   document.getElementById('mem-overlay').classList.add('active')
-  document.getElementById('mem-header').textContent = layer + ':' + id
+  document.getElementById('mem-header').textContent = (layer+':'+id).toUpperCase()
   document.getElementById('mem-content').textContent = 'Loading...'
-  try {
-    const data = await (await fetch('/api/memory/' + layer + '/' + id)).json()
-    document.getElementById('mem-content').textContent = data.content || '(empty)'
-  } catch (e) { document.getElementById('mem-content').textContent = 'Error: ' + e.message }
+  try { const d = await (await fetch('/api/memory/'+layer+'/'+id)).json(); document.getElementById('mem-content').textContent = d.content||'(empty)' }
+  catch(e) { document.getElementById('mem-content').textContent = 'Error: '+e.message }
 }
 function closeMemory() { document.getElementById('mem-overlay').classList.remove('active') }
-
-// Dependency Graph
-async function loadDepGraph() {
-  try {
-    const data = await (await fetch('/api/dependencies')).json()
-    if (!data.edges || data.edges.length === 0) { document.getElementById('dep-sec').style.display = 'none'; return }
-    document.getElementById('dep-sec').style.display = 'block'
-    const canvas = document.getElementById('dep-canvas')
-    const ctx = canvas.getContext('2d')
-    const W = canvas.width = canvas.parentElement.offsetWidth
-    const H = canvas.height = 120
-    ctx.clearRect(0, 0, W, H)
-
-    const colors = { running: '#22c55e', done: '#3b82f6', error: '#ef4444', killed: '#6b7280', waiting: '#eab308', starting: '#eab308' }
-    const nodes = data.nodes
-    const gap = W / (nodes.length + 1)
-    const positions = {}
-    nodes.forEach((n, i) => { positions[n.name] = { x: gap * (i + 1), y: H / 2 } })
-
-    // Draw edges
-    ctx.strokeStyle = '#555'; ctx.lineWidth = 2
-    data.edges.forEach(e => {
-      const from = positions[e.from], to = positions[e.to]
-      if (!from || !to) return
-      ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke()
-      // Arrow
-      const angle = Math.atan2(to.y - from.y, to.x - from.x)
-      ctx.beginPath()
-      ctx.moveTo(to.x - 16 * Math.cos(angle - 0.3), to.y - 16 * Math.sin(angle - 0.3))
-      ctx.lineTo(to.x - 8 * Math.cos(angle), to.y - 8 * Math.sin(angle))
-      ctx.lineTo(to.x - 16 * Math.cos(angle + 0.3), to.y - 16 * Math.sin(angle + 0.3))
-      ctx.fillStyle = '#555'; ctx.fill()
-    })
-
-    // Draw nodes
-    nodes.forEach(n => {
-      const p = positions[n.name]
-      ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI * 2)
-      ctx.fillStyle = colors[n.status] || '#6b7280'; ctx.fill()
-      ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--text-0').trim() || '#eee'
-      ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'center'
-      ctx.fillText(n.name, p.x, p.y + 24)
-    })
-  } catch {}
-}
-loadDepGraph()
 
 // Auto-refresh
 setInterval(async () => {
   try {
-    const res = await fetch(window.location.href)
-    const html = await res.text()
-    const parser = new DOMParser()
-    const doc = parser.parseFromString(html, 'text/html')
-    const logsActive = document.getElementById('logs-panel')?.classList.contains('active')
-    const logsContent = document.getElementById('logs-content')?.textContent
-    const logsTitle = document.getElementById('logs-title')?.textContent
-    document.querySelector('.stats').innerHTML = doc.querySelector('.stats').innerHTML
-    const cards = document.querySelectorAll('.sec .card')
-    const newCards = doc.querySelectorAll('.sec .card')
-    if (cards[0] && newCards[0]) cards[0].innerHTML = newCards[0].innerHTML
-    if (logsActive) {
-      document.getElementById('logs-panel').classList.add('active')
-      document.getElementById('logs-content').textContent = logsContent
-      document.getElementById('logs-title').textContent = logsTitle
-    }
-    loadNotifications()
-    loadDepGraph()
+    const r = await fetch(window.location.href); const h = await r.text()
+    const p = new DOMParser(); const d = p.parseFromString(h,'text/html')
+    const la = document.getElementById('logs-panel')?.classList.contains('active')
+    const lc = document.getElementById('logs-content')?.textContent
+    const lt = document.getElementById('logs-title')?.textContent
+    const ss = d.querySelectorAll('.grid-cols-6 > div')
+    const ts = document.querySelectorAll('.grid-cols-6 > div')
+    ss.forEach((s,i) => { if(ts[i]) ts[i].innerHTML = s.innerHTML })
+    if (la) { document.getElementById('logs-panel').classList.add('active'); document.getElementById('logs-content').textContent=lc; document.getElementById('logs-title').textContent=lt }
+    loadNotifs()
   } catch {}
 }, 10000)
-</script>
-</body>
-</html>`
+<\/script>
+</body></html>`
 }
 
 export function getWorkersJson(): WorkerData[] { return getWorkers() }
