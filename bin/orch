@@ -1029,7 +1029,9 @@ cmd_memory() {
     promote)     cmd_memory_promote "$@" ;;
     add)         cmd_memory_add "$@" ;;
     consolidate) cmd_memory_consolidate "$@" ;;
-    *)           die "Usage: orch memory <list|show|rebuild|promote|add|consolidate> [args]" ;;
+    auto-consolidate) cmd_memory_auto_consolidate "$@" ;;
+    schedule-consolidation) cmd_memory_schedule_consolidation "$@" ;;
+    *)           die "Usage: orch memory <list|show|rebuild|promote|add|consolidate|auto-consolidate|schedule-consolidation> [args]" ;;
   esac
 }
 
@@ -1316,6 +1318,78 @@ cmd_memory_consolidate() {
 
   echo "Consolidation worker '$worker_name' spawned."
   echo "  Check progress: orch logs $worker_name"
+}
+
+cmd_memory_auto_consolidate() {
+  # Consolidate all projects + user memory that have 3+ entries
+  local consolidated=0
+
+  # User memory
+  if [ -d "$MEMORY_DIR/user" ]; then
+    local count=0
+    shopt -s nullglob
+    for f in "$MEMORY_DIR/user"/*.md; do
+      [ "$(basename "$f")" = "_index.md" ] && continue
+      count=$((count + 1))
+    done
+    shopt -u nullglob
+    if [ "$count" -ge 3 ]; then
+      echo "User memory: $count entries, consolidating..."
+      cmd_memory_consolidate --user
+      consolidated=$((consolidated + 1))
+    fi
+  fi
+
+  # All projects
+  shopt -s nullglob
+  for proj_dir in "$ORCH_HOME"/projects/*/memory; do
+    [ -d "$proj_dir" ] || continue
+    local pname
+    pname=$(basename "$(dirname "$proj_dir")")
+    local count=0
+    for f in "$proj_dir"/*.md; do
+      [ "$(basename "$f")" = "_index.md" ] && continue
+      count=$((count + 1))
+    done
+    if [ "$count" -ge 3 ]; then
+      echo "Project '$pname': $count entries, consolidating..."
+      cmd_memory_consolidate --project "$pname"
+      consolidated=$((consolidated + 1))
+    fi
+  done
+  shopt -u nullglob
+
+  if [ "$consolidated" -eq 0 ]; then
+    echo "No layers have enough memories to consolidate (need 3+)."
+  else
+    echo "Spawned $consolidated consolidation worker(s)."
+  fi
+}
+
+cmd_memory_schedule_consolidation() {
+  # Install a cron job to run auto-consolidation every 2 days
+  local orch_path
+  orch_path=$(which orch 2>/dev/null || echo "$HOME/.local/bin/orch")
+
+  local cron_entry="0 3 */2 * * $orch_path memory auto-consolidate >> $ORCH_HOME/consolidation.log 2>&1"
+
+  # Check if already scheduled
+  if crontab -l 2>/dev/null | grep -q "orch memory auto-consolidate"; then
+    echo "Consolidation is already scheduled:"
+    crontab -l 2>/dev/null | grep "orch memory"
+    echo ""
+    echo "To remove: crontab -e and delete the line."
+    return
+  fi
+
+  # Add to crontab
+  (crontab -l 2>/dev/null; echo "$cron_entry") | crontab -
+
+  echo "Scheduled memory consolidation every 2 days at 3:00 AM."
+  echo "  Cron entry: $cron_entry"
+  echo "  Log: $ORCH_HOME/consolidation.log"
+  echo ""
+  echo "To remove: crontab -e and delete the orch line."
 }
 
 # =============================================================================
