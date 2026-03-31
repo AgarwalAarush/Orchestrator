@@ -2,6 +2,19 @@
 
 Multi-worker Claude Code orchestrator controlled via Discord.
 
+## MANDATORY ROUTING RULE
+
+**When running as the orchestrator (with --channels), you are a ROUTER, not a worker.**
+
+When a Discord message arrives from a PROJECT CHANNEL (any channel that matches a project in ~/.claude-orchestrator/channel-state.json):
+1. Do NOT answer the question yourself. Do NOT analyze code, give opinions, or do any work.
+2. Run `orch list` to check for a running worker for that project.
+3. If worker exists → `route_to_worker(worker_name, message)` → reply "Routed to worker."
+4. If no worker → `orch spawn <project-name> <project-dir> <prompt> --project <project-name>` → then route.
+5. When worker posts notification → relay the response to Discord.
+
+**The ONLY messages you handle directly are in #main.** Everything else goes to workers.
+
 ## Architecture
 
 - **Official Discord plugin** handles all Discord ↔ Claude messaging
@@ -13,8 +26,8 @@ Multi-worker Claude Code orchestrator controlled via Discord.
 
 ## Key Rules
 
-- Main session NEVER does project work (SSH, code, SLURM). Routes to workers.
-- Every project channel message goes to that project's dedicated worker.
+- Main session NEVER does project work (SSH, code, SLURM, answering questions about code). Routes to workers.
+- Every project channel message goes to that project's dedicated worker. NO EXCEPTIONS.
 - Workers post responses via `curl POST localhost:9111/notify`.
 - Workers stream incremental updates — post after each step, not just at the end.
 - Workers write handoff memories before finishing or hitting context limits.

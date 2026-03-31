@@ -1,5 +1,5 @@
 {
-  "default_model": "sonnet",
+  "default_model": "opus",
   "max_workers": 12,
   "permissions_skip": true,
   "channel_port": 9111,
