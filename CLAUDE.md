@@ -9,13 +9,36 @@ Multi-worker Claude Code orchestrator controlled via Discord.
 - **orch CLI** (`bin/orch`) manages worker lifecycle via tmux
 - **Main session** is a thin router — routes project messages to workers, relays responses back
 - **Workers** are full Claude Code sessions in tmux with project memory
+- **Web dashboard** at `localhost:9111` when companion server is running
 
 ## Key Rules
 
 - Main session NEVER does project work (SSH, code, SLURM). Routes to workers.
 - Every project channel message goes to that project's dedicated worker.
 - Workers post responses via `curl POST localhost:9111/notify`.
+- Workers stream incremental updates — post after each step, not just at the end.
+- Workers write handoff memories before finishing or hitting context limits.
 - Memory is file-based markdown with YAML frontmatter at `~/.claude-orchestrator/memory/`.
+
+## Quick Start
+
+```bash
+orch start          # Launch orchestrator in tmux with Discord channels
+orch stop           # Shut it down
+orch attach <name>  # Jump into a worker's terminal
+```
+
+Dashboard: `http://localhost:9111` (when orchestrator is running)
+
+## CLI Commands
+
+```
+orch spawn <n> <dir> <prompt> [--project p] [--template t] [--model m] [--after w]
+orch send/status/list/logs/kill/attach/cleanup
+orch start/stop
+orch project create/update/link/archive/list
+orch memory list/show/rebuild/promote/add/consolidate
+```
 
 ## Development
 
@@ -29,7 +52,10 @@ Multi-worker Claude Code orchestrator controlled via Discord.
 
 - CLI: `bin/orch`
 - Companion server: `channel/src/server.ts` (entry), `tools.ts`, `http.ts`, `state.ts`
+- Dashboard: `channel/src/dashboard.ts`
+- Monitor: `channel/src/monitor.ts` (heartbeat, auto-resume, dependency checks)
 - Templates: `templates/*.md` (frontmatter `default_model` sets per-template model)
 - Runtime: `~/.claude-orchestrator/` (installed by `install.sh`)
 - Discord state: `~/.claude-orchestrator/channel-state.json`
 - Discord access: `~/.claude/channels/discord/access.json`
+- Web dashboard: `http://localhost:9111` (served by companion server)
